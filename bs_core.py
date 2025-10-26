@@ -9,7 +9,7 @@ def _phi(x: float) -> float:
 
 
 def _Phi(x: float) -> float:
-return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+  return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 @dataclass
 class OptionInput:
