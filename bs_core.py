@@ -5,7 +5,7 @@ from typing import Tuple, Dict, Optional
 
 # ---- Normal pdf/cdf ----
 def _phi(x: float) -> float:
-return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+  return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
 
 
 def _Phi(x: float) -> float:
