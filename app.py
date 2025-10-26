@@ -12,8 +12,14 @@ from bs_core import (
     moneyness_tags,
 )
 
+# NEW: Binomial CRR functions (you'll add american_binomial.py next)
+from american_binomial import (
+    crr_price_european,
+    crr_price_american,
+)
+
 st.set_page_config(page_title="Option Pricer — Black–Scholes", page_icon="📈", layout="wide")
-st.title("📈 Black–Scholes Option Pricer (with Greeks, IV & Chain Upload)")
+st.title("📈 Black–Scholes Option Pricer (with Greeks, IV, Chain Upload, and American CRR)")
 
 with st.expander("What's new?", expanded=True):
     st.markdown(
@@ -23,7 +29,7 @@ with st.expander("What's new?", expanded=True):
         - **Bid/Ask support**: auto-compute mid and **IV(mid)**.
         - **Moneyness panel**: S/K, log-moneyness, d₁, and tags (ITM/ATM/OTM).
         - **Options Chain (CSV)** upload → compute **IV per row** and plot **IV smiles**.
-        - Core logic factored into `bs_core.py`; tests and CI in repo.
+        - **American vs European (Binomial CRR)** comparison: tree price vs Black–Scholes.
         """
     )
 
@@ -328,7 +334,36 @@ if chain_file is not None:
                 mime="text/csv",
             )
 
+# -----------------------------
+# American vs European (Binomial CRR)
+# -----------------------------
+st.subheader("American vs European (Binomial CRR)")
+
+# Steps slider for CRR tree
+steps = st.slider("CRR steps (more steps → better convergence, slower compute)", min_value=25, max_value=1000, value=200, step=25)
+
+# Compute tree prices
+otype = opt_type.lower()
+euro_tree = crr_price_european(inp, otype, steps)
+amer_tree = crr_price_american(inp, otype, steps)
+
+# BS European (closed-form) for comparison
+bs_euro = call if otype == "call" else put
+
+c1, c2, c3 = st.columns(3)
+c1.metric("CRR European", f"{euro_tree:,.6f}")
+c2.metric("Black–Scholes European", f"{bs_euro:,.6f}", delta=f"{(euro_tree - bs_euro):+.6f}")
+c3.metric("CRR American", f"{amer_tree:,.6f}")
+
+# Early exercise premium (should be ≥ 0 for puts; for calls it’s typically 0 if q=0)
+premium = amer_tree - bs_euro
+st.caption(
+    f"Early-exercise premium vs BS (European): {premium:+.6f} "
+    "(Note: American call with q≈0 should ≈ European; American put can be higher.)"
+)
+
 st.caption(
     "European options, Black–Scholes, continuous compounding, optional dividend yield q. "
-    "IV solved via bracketed bisection/secant on [1e-6, 5.0]."
+    "IV solved via bracketed bisection/secant on [1e-6, 5.0]. "
+    "CRR tree supports American early exercise."
 )
