@@ -12,24 +12,29 @@ from bs_core import (
     moneyness_tags,
 )
 
-# NEW: Binomial CRR functions (you'll add american_binomial.py next)
+# Binomial CRR (American/European)
 from american_binomial import (
     crr_price_european,
     crr_price_american,
 )
 
+# Vol surface helpers
+from vol_surface import compute_chain_iv, prepare_surface_arrays
+
+
 st.set_page_config(page_title="Option Pricer — Black–Scholes", page_icon="📈", layout="wide")
-st.title("📈 Black–Scholes Option Pricer (with Greeks, IV, Chain Upload, and American CRR)")
+st.title("📈 Black–Scholes Option Pricer (with Greeks, IV, Chain Upload, American CRR, and Vol Surface)")
 
 with st.expander("What's new?", expanded=True):
     st.markdown(
         """
-        **New features**
-        - **Implied Volatility (IV) solver**: input market price → get σ.
-        - **Bid/Ask support**: auto-compute mid and **IV(mid)**.
-        - **Moneyness panel**: S/K, log-moneyness, d₁, and tags (ITM/ATM/OTM).
-        - **Options Chain (CSV)** upload → compute **IV per row** and plot **IV smiles**.
-        - **American vs European (Binomial CRR)** comparison: tree price vs Black–Scholes.
+        **Features**
+        - **Black–Scholes (European)** prices & full **Greeks**
+        - **Implied Volatility (IV) solver** (single price or Bid/Ask mid)
+        - **Moneyness panel** (S/K, log-moneyness, d₁, tags)
+        - **Options Chain (CSV)** → bulk IV + **IV Smiles**
+        - **American vs European (Binomial CRR)** comparison
+        - **Volatility Surface** (K × T): 3D scatter & 2D contour
         """
     )
 
@@ -340,7 +345,13 @@ if chain_file is not None:
 st.subheader("American vs European (Binomial CRR)")
 
 # Steps slider for CRR tree
-steps = st.slider("CRR steps (more steps → better convergence, slower compute)", min_value=25, max_value=1000, value=200, step=25)
+steps = st.slider(
+    "CRR steps (more steps → better convergence, slower compute)",
+    min_value=25,
+    max_value=1000,
+    value=200,
+    step=25,
+)
 
 # Compute tree prices
 otype = opt_type.lower()
@@ -355,15 +366,110 @@ c1.metric("CRR European", f"{euro_tree:,.6f}")
 c2.metric("Black–Scholes European", f"{bs_euro:,.6f}", delta=f"{(euro_tree - bs_euro):+.6f}")
 c3.metric("CRR American", f"{amer_tree:,.6f}")
 
-# Early exercise premium (should be ≥ 0 for puts; for calls it’s typically 0 if q=0)
+# Early exercise premium
 premium = amer_tree - bs_euro
 st.caption(
     f"Early-exercise premium vs BS (European): {premium:+.6f} "
     "(Note: American call with q≈0 should ≈ European; American put can be higher.)"
 )
 
+# -----------------------------
+# Volatility Surface (K × T)
+# -----------------------------
+st.subheader("Volatility Surface (K × T)")
+st.caption("Upload a multi-expiry options CSV. We'll compute IV for each row and plot a surface.")
+
+surf_file = st.file_uploader(
+    "Upload CSV with K, T (years), and price fields (Mid or Bid/Ask or Price). Optional: type (call/put).",
+    type=["csv"],
+    key="surface_uploader",
+)
+
+if surf_file is not None:
+    try:
+        raw = pd.read_csv(surf_file)
+    except Exception as e:
+        st.error(f"Could not read CSV: {e}")
+        raw = None
+
+    if raw is not None:
+        try:
+            df_iv = compute_chain_iv(
+                raw,
+                S0=S0,
+                r=r,
+                q=q,
+                default_T=T,
+                default_type=opt_type.lower(),
+                sigma_seed=max(sigma, 1e-6),
+            )
+        except Exception as e:
+            st.error(f"Error computing IV: {e}")
+            df_iv = None
+
+        if df_iv is not None:
+            st.write("Computed IV dataset:")
+            st.dataframe(
+                df_iv[["K", "T", "otype", "MarketPrice", "IV_%", "Tag"]]
+                .sort_values(["T", "K"])
+                .style.format({"MarketPrice": "{:.4f}", "IV_%": "{:.3f}"}),
+                use_container_width=True,
+            )
+
+            # Smiles by expiry
+            st.markdown("**IV Smiles by Expiry**")
+            valid = df_iv.dropna(subset=["IV"])
+            if valid.empty:
+                st.info("No valid IV values to plot.")
+            else:
+                for t_val in sorted(valid["T"].unique()):
+                    sub = valid[valid["T"] == t_val].sort_values("K")
+                    fig, ax = plt.subplots()
+                    ax.plot(sub["K"], sub["IV_%"], marker="o", linestyle="-")
+                    ax.set_xlabel("Strike (K)")
+                    ax.set_ylabel("Implied Volatility (%)")
+                    ax.set_title(f"Smile — T={t_val:.4f} yrs")
+                    st.pyplot(fig, use_container_width=True)
+
+                # 3D Surface (scatter)
+                st.markdown("**Volatility Surface (3D scatter)**")
+                from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+                K_arr, T_arr, IVp_arr = prepare_surface_arrays(valid)
+                fig3 = plt.figure()
+                ax3 = fig3.add_subplot(111, projection="3d")
+                ax3.scatter(K_arr, T_arr, IVp_arr)
+                ax3.set_xlabel("Strike (K)")
+                ax3.set_ylabel("Expiry (T, years)")
+                ax3.set_zlabel("IV (%)")
+                ax3.set_title("IV Surface — 3D scatter")
+                st.pyplot(fig3, use_container_width=True)
+
+                # 2D Contour (tricontourf)
+                st.markdown("**Volatility Surface (2D contour)**")
+                fig4, ax4 = plt.subplots()
+                try:
+                    tric = ax4.tricontourf(K_arr, T_arr, IVp_arr, levels=12)
+                    fig4.colorbar(tric, ax=ax4, label="IV (%)")
+                    ax4.set_xlabel("Strike (K)")
+                    ax4.set_ylabel("Expiry (T, years)")
+                    ax4.set_title("IV Surface — contour")
+                    st.pyplot(fig4, use_container_width=True)
+                except Exception:
+                    st.info("Not enough distinct points for a filled contour; 3D scatter above still shows the surface shape.")
+
+            # Download enriched data
+            out2 = df_iv.sort_values(["T", "K"]).to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Download IV dataset (CSV)",
+                data=out2,
+                file_name="iv_surface_dataset.csv",
+                mime="text/csv",
+            )
+
 st.caption(
     "European options, Black–Scholes, continuous compounding, optional dividend yield q. "
     "IV solved via bracketed bisection/secant on [1e-6, 5.0]. "
-    "CRR tree supports American early exercise."
+    "CRR tree supports American early exercise. "
+    "Surface computed from uploaded multi-expiry chains."
 )
