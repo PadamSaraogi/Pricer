@@ -25,14 +25,23 @@ from bonds import (
     macaulay_duration_dates,
     modified_duration_dates,
 )
-from yield_curve import bootstrap_curve, YieldCurve
+from yield_curve import YieldCurve
 from swaps import par_swap_rate, swap_pv, dv01
 from daycount import year_fraction, DayCount, BizConv
 from date_utils import parse_date
 
-# NEW: curve-aware forwards + Black-76
+# NEW: forwards & Black-76 (curve-aware)
 from forwards import forward_price, forward_price_from_curve
-from black76 import black76_price, black76_greeks, implied_vol_b76, black76_price_df, black76_greeks_df
+from black76 import (
+    black76_price,
+    black76_greeks,
+    implied_vol_b76,
+    black76_price_df,
+    black76_greeks_df,
+)
+
+# NEW: discrete dividends
+from dividends import CashDividend, spot_adjusted_for_dividends
 
 # ---------------------------
 # Micro-caching wrappers
@@ -41,7 +50,6 @@ from black76 import black76_price, black76_greeks, implied_vol_b76, black76_pric
 def cached_bootstrap_curve(
     deposits, bonds, valuation_date: date | None = None, day_count: str = "ACT/365F"
 ):
-    # Import inside to avoid circulars in some environments
     from yield_curve import bootstrap_curve as _bootstrap_curve
     return _bootstrap_curve(deposits, bonds, valuation_date=valuation_date, day_count=day_count)
 
@@ -84,11 +92,45 @@ if use_dates:
 else:
     T = col3.number_input("Time to expiry T (years)", min_value=0.00274, value=0.5, step=0.01, help="0.00274 ≈ 1 day")
     q = col4.number_input("Dividend yield q (annual, %, cont.)", value=0.0, step=0.25, format="%.2f") / 100.0
+    dc: DayCount = "ACT/365F"
     val_date = date.today()
 
 opt_type = st.sidebar.radio("Option type", ["Call", "Put"], horizontal=True)
 
-# Tabs (including Futures & Black-76)
+# ---- NEW: Discrete cash dividends editor ----
+st.sidebar.markdown("---")
+use_disc_div = st.sidebar.toggle("Enable discrete **cash** dividends", value=False)
+div_dc: DayCount = st.sidebar.selectbox("Day-count for dividends", ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"], index=0, disabled=not use_disc_div)
+
+div_default = pd.DataFrame(
+    {
+        "Pay Date (YYYY-MM-DD)": [str(date(val_date.year, min(val_date.month + 3, 12), min(val_date.day, 28)))],
+        "Amount": [1.00],
+    }
+)
+div_table = None
+dividends_list = []
+if use_disc_div:
+    st.sidebar.caption("Add future cash dividends (per share) that occur before option expiry.")
+    div_table = st.sidebar.data_editor(div_default, num_rows="dynamic", use_container_width=True, key="disc_div_tbl")
+    for _, row in div_table.iterrows():
+        try:
+            dpay = parse_date(str(row["Pay Date (YYYY-MM-DD)"]))
+            amt = float(row["Amount"])
+            if amt > 0 and dpay > val_date:
+                dividends_list.append(CashDividend(pay_date=dpay, amount=amt))
+        except Exception:
+            pass
+
+# Compute effective spot for **equity option** pricing tabs
+if use_disc_div and len(dividends_list) > 0:
+    S_for_options = spot_adjusted_for_dividends(S0, dividends_list, r_cont=r, valuation_date=val_date, dc=div_dc)
+    pv_div = S0 - S_for_options
+    st.sidebar.info(f"S₀,eff = S₀ − PV(divs) = {S0:.4f} − {pv_div:.4f} = **{S_for_options:.4f}**")
+else:
+    S_for_options = S0
+
+# Tabs
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
     [
         "Option Pricer",
@@ -105,7 +147,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
 # ===== TAB 1: Option Pricer (BSM) =====
 with tab1:
     st.subheader("European Options — Black–Scholes")
-    st.caption("r and q are treated as continuously-compounded here.")
+    st.caption("r and q are continuous. If discrete dividends enabled, we price with **S₀,eff = S₀ − PV(divs)**.")
 
     colm1, colm2, _ = st.columns(3)
     bid = colm1.number_input("Bid", min_value=0.0, value=0.0, step=0.1, key="bid1")
@@ -113,7 +155,7 @@ with tab1:
     mid = 0.5 * (bid + ask) if (bid > 0 and ask > 0 and ask >= bid) else None
     mkt_price = st.number_input("Single market price (for IV)", min_value=0.0, value=0.0, step=0.1, key="mkt1")
 
-    inp = OptionInput(S0=S0, K=K, r=r, sigma=sigma, T=T, q=q)
+    inp = OptionInput(S0=S_for_options, K=K, r=r, sigma=sigma, T=T, q=q)
     try:
         call, put, d1, d2 = bs_prices(inp)
         G = bs_greeks(inp)
@@ -128,7 +170,7 @@ with tab1:
     m4.metric("d₂", f"{d2:,.4f}")
 
     st.subheader("Moneyness & Tags")
-    tag_info = moneyness_tags(S0, K, d1)
+    tag_info = moneyness_tags(S_for_options, K, d1)
     mtc1, mtc2, mtc3, mtc4 = st.columns(4)
     mtc1.metric("S/K", tag_info["S_over_K"])
     mtc2.metric("log-moneyness", tag_info["log_moneyness"])
@@ -162,7 +204,7 @@ with tab1:
         coliv2.metric("IV (Bid/Ask mid)" if iv_mid is not None else "IV error", f"{iv_mid*100:.3f}%" if iv_mid else "No root")
 
     st.subheader("Charts")
-    S_min = max(0.01, S0 * 0.4); S_max = S0 * 1.6
+    S_min = max(0.01, S_for_options * 0.4); S_max = S_for_options * 1.6
     S_grid = np.linspace(S_min, S_max, 200)
     payoff = np.maximum(S_grid - K, 0.0) if opt_type == "Call" else np.maximum(K - S_grid, 0.0)
     fig1, ax1 = plt.subplots()
@@ -178,18 +220,19 @@ with tab1:
         call_vals.append(c); put_vals.append(p)
     fig2, ax2 = plt.subplots()
     if opt_type == "Call":
-        ax2.plot(S_grid, call_vals, label="Call value (today)"); ax2.scatter([S0], [call], marker="o")
+        ax2.plot(S_grid, call_vals, label="Call value (today)"); ax2.scatter([S_for_options], [call], marker="o")
     else:
-        ax2.plot(S_grid, put_vals, label="Put value (today)"); ax2.scatter([S0], [put], marker="o")
-    ax2.set_xlabel("Spot price S₀"); ax2.set_ylabel("Option value today")
-    ax2.set_title(f"{opt_type} value vs spot (Black–Scholes)"); ax2.legend()
+        ax2.plot(S_grid, put_vals, label="Put value (today)"); ax2.scatter([S_for_options], [put], marker="o")
+    ax2.set_xlabel("Spot (S₀,eff)"); ax2.set_ylabel("Option value today")
+    ax2.set_title(f"{opt_type} value vs effective spot (Black–Scholes)"); ax2.legend()
     st.pyplot(fig2, use_container_width=True)
 
 # ===== TAB 2: American (CRR) =====
 with tab2:
     st.subheader("American vs European (CRR Binomial)")
+    st.caption("Discrete dividends are applied via S₀,eff in the underlying start node.")
     steps = st.slider("CRR steps (accuracy vs speed)", min_value=25, max_value=1000, value=200, step=25, key="crr_steps")
-    inp = OptionInput(S0=S0, K=K, r=r, sigma=sigma, T=T, q=q)
+    inp = OptionInput(S0=S_for_options, K=K, r=r, sigma=sigma, T=T, q=q)
     otype = opt_type.lower()
     euro_tree = crr_price_european(inp, otype, steps)
     amer_tree = crr_price_american(inp, otype, steps)
@@ -244,31 +287,38 @@ with tab3:
                     df["otype"] = opt_type.lower()
 
                 if price_series is not None:
-                    # >>> replaced compute_chain_iv(...) with cached_compute_chain_iv(...)
+                    # Use effective spot for IV (discrete dividends)
                     df_iv = cached_compute_chain_iv(
-                        df.assign(Price=price_series)[["K", "T_row", "otype"]].rename(columns={"T_row": "T"}).join(
-                            pd.DataFrame({"MarketPrice": price_series})
-                        ),
-                        S0=S0, r=r, q=q, default_T=T, default_type=opt_type.lower(), sigma_seed=max(sigma, 1e-6)
+                        df.assign(MarketPrice=price_series),
+                        S0=S_for_options, r=r, q=q,
+                        default_T=T, default_type=opt_type.lower(), sigma_seed=max(sigma, 1e-6)
                     )
-                    # If your compute_chain_iv expects original wide CSV, you can instead just call:
-                    # df_iv = cached_compute_chain_iv(chain_df, S0=S0, r=r, q=q, default_T=T, default_type=opt_type.lower(), sigma_seed=max(sigma, 1e-6))
 
-                    # For display, if df_iv already returns IV etc. use it directly. Else fallback to manual (kept from earlier logic).
                     if {"K", "T", "otype", "IV"}.issubset(df_iv.columns):
                         out_df = df_iv.copy()
+                        if "IV_%" not in out_df.columns:
+                            out_df["IV_%"] = out_df["IV"] * 100.0
+                        if "MarketPrice" not in out_df.columns:
+                            out_df["MarketPrice"] = price_series.values
+                        if "Tag" not in out_df.columns:
+                            # add tags with the (effective) spot
+                            tags = []
+                            for k in out_df["K"].values:
+                                d1_approx = 0.0  # we don't have per-row d1; tag off S/K only
+                                tags.append("ITM" if (opt_type.lower()=="call" and S_for_options>k) or (opt_type.lower()=="put" and S_for_options<k) else "OTM")
+                            out_df["Tag"] = tags
                     else:
-                        # Fall back to manual per-row solver if your compute_chain_iv returns raw
+                        # Fallback manual solver
                         iv_list, tag_list, t_list = [], [], []
                         for k, px, t, ty in zip(df["K"], price_series, df["T_row"], df["otype"]):
-                            _in = OptionInput(S0=S0, K=float(k), r=r, sigma=max(sigma, 1e-6), T=float(t), q=q)
+                            _in = OptionInput(S0=S_for_options, K=float(k), r=r, sigma=max(sigma, 1e-6), T=float(t), q=q)
                             iv = implied_vol(float(px), _in, ty)
                             if iv is None:
                                 iv_list.append(float("nan")); tag_list.append("no-root")
                             else:
                                 iv_list.append(iv)
                                 G_row = bs_greeks(_in)
-                                tag_list.append(moneyness_tags(S0, float(k), G_row["d1"])["tag"])
+                                tag_list.append(moneyness_tags(S_for_options, float(k), G_row["d1"])["tag"])
                             t_list.append(t)
                         out_df = pd.DataFrame({"K": df["K"], "T": t_list, "otype": df["otype"], "MarketPrice": price_series, "IV": iv_list})
                         out_df["IV_%"] = out_df["IV"] * 100.0
@@ -303,9 +353,9 @@ with tab4:
     if surf_file is not None:
         try:
             raw = pd.read_csv(surf_file)
-            # >>> replaced compute_chain_iv(...) with cached_compute_chain_iv(...)
+            # Use effective spot when transforming prices→IV
             df_iv = cached_compute_chain_iv(
-                raw, S0=S0, r=r, q=q, default_T=T, default_type=opt_type.lower(), sigma_seed=max(sigma, 1e-6)
+                raw, S0=S_for_options, r=r, q=q, default_T=T, default_type=opt_type.lower(), sigma_seed=max(sigma, 1e-6)
             )
             st.dataframe(
                 df_iv[["K", "T", "otype", "MarketPrice", "IV_%", "Tag"]].sort_values(["T", "K"])
@@ -440,7 +490,6 @@ with tab6:
                 pass
         if st.button("Bootstrap Curve (Numeric)", type="primary"):
             try:
-                # >>> replaced bootstrap_curve(...) with cached_bootstrap_curve(...)
                 curve = cached_bootstrap_curve(deposits, bonds)
                 st.session_state["bootstrapped_curve"] = curve
                 st.success("Curve bootstrapped.")
@@ -475,7 +524,6 @@ with tab6:
 
         if st.button("Bootstrap Curve (Dates)", type="primary"):
             try:
-                # >>> replaced bootstrap_curve(...) with cached_bootstrap_curve(...)
                 curve = cached_bootstrap_curve(deposits, bonds, valuation_date=curve_val_date, day_count=dc_curve)
                 st.session_state["bootstrapped_curve"] = curve
                 st.success("Curve bootstrapped.")
@@ -528,7 +576,7 @@ with tab8:
     K_fut = colF1.number_input("Strike (K)", min_value=0.0001, value=float(K), step=1.0, key="b76_k")
     T_fut = colF2.number_input("T (years, for futures option)", min_value=0.00274, value=float(T), step=0.01, help="0.00274 ≈ 1 day", key="b76_T")
 
-    # Compute/enter forward
+    # Compute/enter forward (we keep futures as-is; discrete cash dividends handled via q here)
     if mode_fut.startswith("Compute"):
         if disc_src == "From curve (DF(T))" and curve is not None:
             q_flat = st.number_input("Dividend/conv. yield q (%, cont.)", min_value=0.0, value=float(q * 100), step=0.25, format="%.2f", key="q_curve") / 100.0
@@ -543,7 +591,6 @@ with tab8:
     sigma_b76 = st.number_input("Volatility σ (annual, %)", min_value=0.01, value=20.0, step=0.5, format="%.2f", key="b76_sigma") / 100.0
     otype_b76 = st.radio("Option type (futures)", ["Call", "Put"], horizontal=True, key="b76_otype").lower()
 
-    # DF(T) selection for pricing & IV
     DF_T = None
     if disc_src == "From curve (DF(T))":
         if curve is None:
@@ -552,7 +599,6 @@ with tab8:
             DF_T = curve.get_df(T_fut)
             st.metric("DF(T) from curve", f"{DF_T:.6f}")
 
-    # IV from market
     st.markdown("**Implied Volatility (from market price)**")
     mkt_b76 = st.number_input("Market option price (any currency)", min_value=0.0, value=0.0, step=0.1, key="b76_mkt")
     if mkt_b76 > 0:
@@ -562,7 +608,6 @@ with tab8:
         else:
             st.metric("Black-76 IV", f"{iv76*100:.3f}%")
 
-    # Pricing & Greeks with selected discounting source
     if DF_T is None:
         price_b76 = black76_price(F0, K_fut, r, T_fut, sigma_b76, otype_b76)
         G76 = black76_greeks(F0, K_fut, r, T_fut, sigma_b76)
@@ -586,7 +631,6 @@ with tab8:
     c5.metric("Theta/day", f"{theta_day:,.6f}")
     c6.metric(("Rho (per 1.0 r)" if DF_T is None else "Sensitivity to DF(T)"), f"{rho_disp:,.6f}")
 
-    # Charts
     st.subheader("Charts")
     F_grid = np.linspace(max(0.01, F0 * 0.4), F0 * 1.6, 200)
     payoff_call = np.maximum(F_grid - K_fut, 0.0)
@@ -607,6 +651,6 @@ with tab8:
     st.pyplot(figv, use_container_width=True)
 
 st.caption(
-    "Date-aware maturities; BSM/CRR options; smiles & surfaces; bonds; bootstrapped curve; "
-    "swaps; and curve-aware futures + Black-76 (prices, Greeks, IV). Caching enabled for curve bootstrap and IV chains."
+    "Discrete cash dividends enabled (S₀,eff = S₀ − PV(divs)) for equity options; "
+    "BSM/CRR; smiles & surface; bonds; bootstrapped curve; swaps; and curve-aware Black-76."
 )
