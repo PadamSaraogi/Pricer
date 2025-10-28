@@ -1,14 +1,15 @@
 """
 black76.py
 Options on futures (Black–76): prices, Greeks, and IV solver.
-Now supports **DF-aware** pricing so you can discount off a bootstrapped curve.
+Supports both flat-r and DF(T)-aware (curve) discounting.
 
-Flat-r interface (legacy):
+Flat-r API:
 - black76_price(F0, K, r, T, sigma, otype)
+- black76_greeks(F0, K, r, T, sigma)                 # <— restored
 
-DF-aware interface (preferred with curves):
+Curve (DF-aware) API:
 - black76_price_df(F0, K, DF_T, T, sigma, otype)
-- black76_greeks_df(F0, K, DF_T, T, sigma)   # Greeks w.r.t. futures; D = DF_T
+- black76_greeks_df(F0, K, DF_T, T, sigma)
 - implied_vol_b76(..., DF_T=...)  # if DF_T is supplied, r is ignored
 """
 
@@ -52,6 +53,60 @@ def black76_price(F0: float, K: float, r: float, T: float, sigma: float, otype: 
         return D * (K * _N(-d2) - F0 * _N(-d1))
 
 
+def black76_greeks(F0: float, K: float, r: float, T: float, sigma: float) -> dict:
+    """
+    Greeks with respect to the **futures** (flat r discounting).
+    Returns keys consistent with app.py: delta_fut, gamma_fut, vega, theta_per_day, theta_per_year, rho, disc, d1, d2.
+    """
+    D = math.exp(-r * T)
+    if T <= 0 or sigma <= 0 or F0 <= 0:
+        # Robust numeric fallbacks when closed-form is ill-defined
+        base_c = black76_price(F0, K, r, T, sigma, "call")
+        vega = (black76_price(F0, K, r, T, sigma + 1e-4, "call") - base_c) / 1e-4
+        theta = (black76_price(F0, K, r, max(T - 1/365, 0.0), sigma, "call") - base_c) / (-1/365)
+        rho = (black76_price(F0, K, r + 1e-4, T, sigma, "call") - base_c) / 1e-4
+        # crude deltas in the degenerate limit (step-like intrinsic)
+        delta_c = 1.0 if F0 > K else 0.0
+        delta_p = - (0.0 if F0 > K else 1.0)
+        return {
+            "delta_fut": {"call": delta_c, "put": delta_p},
+            "gamma_fut": 0.0,
+            "vega": vega,
+            "theta_per_day": theta / 365.0,
+            "theta_per_year": theta,
+            "rho": rho,
+            "disc": D,
+            "d1": float("nan"),
+            "d2": float("nan"),
+        }
+
+    d1, d2 = _d1_d2(F0, K, sigma, T)
+    Nd1 = _N(d1); Nd1m = _N(-d1); nd1 = _n(d1)
+    vsqrt = sigma * math.sqrt(T)
+
+    delta_c = D * Nd1
+    delta_p = -D * Nd1m
+    gamma = D * nd1 / (F0 * vsqrt)
+    vega = D * F0 * nd1 * math.sqrt(T)
+
+    # numeric theta (per year) and rho (per 1.0 change in r)
+    h = 1/365.0
+    theta_num = (black76_price(F0, K, r, max(T - h, 0.0), sigma, "call") - black76_price(F0, K, r, T, sigma, "call")) / (-h)
+    rho_num = (black76_price(F0, K, r + 1e-4, T, sigma, "call") - black76_price(F0, K, r, T, sigma, "call")) / 1e-4
+
+    return {
+        "delta_fut": {"call": delta_c, "put": delta_p},
+        "gamma_fut": gamma,
+        "vega": vega,                       # per 1.0 vol (not %)
+        "theta_per_day": theta_num / 365.0,
+        "theta_per_year": theta_num,
+        "rho": rho_num,
+        "disc": D,
+        "d1": d1,
+        "d2": d2,
+    }
+
+
 # ---------- DF-aware (curve) ----------
 def black76_price_df(F0: float, K: float, DF_T: float, T: float, sigma: float, otype: OptionType) -> float:
     D = float(DF_T)
@@ -68,19 +123,22 @@ def black76_price_df(F0: float, K: float, DF_T: float, T: float, sigma: float, o
 def black76_greeks_df(F0: float, K: float, DF_T: float, T: float, sigma: float) -> dict:
     D = float(DF_T)
     if T <= 0 or sigma <= 0 or F0 <= 0:
-        # Numeric fallbacks
-        base = {t: black76_price_df(F0, K, D, T, sigma, t) for t in ("call", "put")}
-        vega = (black76_price_df(F0, K, D, T, sigma + 1e-4, "call") - base["call"]) / 1e-4
-        theta = (black76_price_df(F0, K, D, max(T - 1/365, 0.0), sigma, "call") - base["call"]) / (-1/365)
-        rhoD = (black76_price_df(F0, K, D * 1.0001, T, sigma, "call") - base["call"]) / (D * 1e-4)  # sensitivity to DF
+        base_c = black76_price_df(F0, K, D, T, sigma, "call")
+        vega = (black76_price_df(F0, K, D, T, sigma + 1e-4, "call") - base_c) / 1e-4
+        theta = (black76_price_df(F0, K, D, max(T - 1/365, 0.0), sigma, "call") - base_c) / (-1/365)
+        rhoD = (black76_price_df(F0, K, D * 1.0001, T, sigma, "call") - base_c) / (D * 1e-4)
+        delta_c = 1.0 if F0 > K else 0.0
+        delta_p = - (0.0 if F0 > K else 1.0)
         return {
-            "delta_fut": {"call": 1.0 if F0 > K else 0.0, "put": - (0.0 if F0 > K else 1.0)},
+            "delta_fut": {"call": delta_c, "put": delta_p},
             "gamma_fut": 0.0,
             "vega": vega,
             "theta_per_day": theta / 365.0,
             "theta_per_year": theta,
             "rho_df": rhoD,
             "disc": D,
+            "d1": float("nan"),
+            "d2": float("nan"),
         }
 
     d1, d2 = _d1_d2(F0, K, sigma, T)
@@ -92,7 +150,6 @@ def black76_greeks_df(F0: float, K: float, DF_T: float, T: float, sigma: float) 
     gamma = D * nd1 / (F0 * vsqrt)
     vega = D * F0 * nd1 * math.sqrt(T)
 
-    # numeric theta and DF sensitivity (rho_df)
     h = 1/365.0
     theta_num = (black76_price_df(F0, K, D, max(T - h, 0.0), sigma, "call") - black76_price_df(F0, K, D, T, sigma, "call")) / (-h)
     rho_df = (black76_price_df(F0, K, D * 1.0001, T, sigma, "call") - black76_price_df(F0, K, D, T, sigma, "call")) / (D * 1e-4)
@@ -105,7 +162,8 @@ def black76_greeks_df(F0: float, K: float, DF_T: float, T: float, sigma: float) 
         "theta_per_year": theta_num,
         "rho_df": rho_df,   # sensitivity to DF(T)
         "disc": D,
-        "d1": d1, "d2": d2,
+        "d1": d1,
+        "d2": d2,
     }
 
 
