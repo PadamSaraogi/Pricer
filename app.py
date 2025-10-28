@@ -23,9 +23,11 @@ from bonds import (
     modified_duration,
     convexity_numeric,
 )
+from yield_curve import bootstrap_curve, YieldCurve
+from swaps import par_swap_rate, swap_pv, dv01
 
-st.set_page_config(page_title="Option Analytics Suite", page_icon="📊", layout="wide")
-st.title("📊 Option & Bond Analytics Dashboard")
+st.set_page_config(page_title="Option & Fixed-Income Analytics", page_icon="📊", layout="wide")
+st.title("📊 Option & Fixed-Income Analytics Dashboard")
 
 # -----------------------------
 # Sidebar (global option inputs)
@@ -48,13 +50,15 @@ opt_type = st.sidebar.radio("Option type", ["Call", "Put"], horizontal=True)
 # -----------------------------
 # Tabs
 # -----------------------------
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
     [
         "Option Pricer",
         "American (CRR)",
         "Chain & Smiles",
         "Vol Surface",
         "Bonds",
+        "Yield Curve",
+        "Swaps",
     ]
 )
 
@@ -450,7 +454,131 @@ with tab5:
             c3.metric("Modified Dur (yrs)", f"{mod:,.4f}")
             c4.metric("Convexity", f"{conv:,.4f}")
 
+# =============================
+# TAB 6: Yield Curve (Bootstrapping)
+# =============================
+with tab6:
+    st.subheader("Yield Curve — Bootstrapping")
+    st.caption("Provide deposits (zero instruments) and optional coupon bonds to bootstrap a zero curve.")
+
+    st.markdown("**Deposits (Zero Rates)**")
+    dep_df = st.data_editor(
+        pd.DataFrame({"T (years)": [0.5, 1.0, 2.0], "Rate (% p.a.)": [3.0, 3.2, 3.5]}),
+        num_rows="dynamic",
+        use_container_width=True,
+        key="dep_editor",
+    )
+    deposits = []
+    for _, row in dep_df.iterrows():
+        try:
+            Tdep = float(row["T (years)"])
+            rdep = float(row["Rate (% p.a.)"]) / 100.0
+            if Tdep > 0:
+                deposits.append((Tdep, rdep))
+        except Exception:
+            pass
+
+    st.markdown("**Coupon Bonds (Optional)**")
+    bond_df = st.data_editor(
+        pd.DataFrame(
+            {
+                "T (years)": [3.0],
+                "Price": [99.50],
+                "Coupon (% p.a.)": [4.0],
+                "Face": [100.0],
+                "Freq": [2],
+            }
+        ),
+        num_rows="dynamic",
+        use_container_width=True,
+        key="bond_editor",
+    )
+    bonds = []
+    for _, row in bond_df.iterrows():
+        try:
+            bonds.append(
+                {
+                    "T": float(row["T (years)"]),
+                    "price": float(row["Price"]),
+                    "coupon": float(row["Coupon (% p.a.)"]) / 100.0,
+                    "face": float(row["Face"]),
+                    "freq": int(row["Freq"]),
+                }
+            )
+        except Exception:
+            pass
+
+    curve = None
+    if st.button("Bootstrap Curve", type="primary"):
+        try:
+            curve = bootstrap_curve(deposits, bonds)
+            st.success("Curve bootstrapped.")
+        except Exception as e:
+            st.error(f"Bootstrapping error: {e}")
+
+    # If already in session, prefer that (unless fresh boot just ran)
+    if curve is None:
+        curve = st.session_state.get("bootstrapped_curve")
+
+    if curve is not None:
+        st.write("**Zero Curve**")
+        st.dataframe(curve.as_dataframe().style.format({"Zero(%)": "{:.3f}", "DF": "{:.6f}"}), use_container_width=True)
+
+        # Charts
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 3))
+        ax1.plot(curve.mats, [z * 100 for z in curve.zeros], marker="o")
+        ax1.set_title("Spot (Zero) Curve")
+        ax1.set_xlabel("T (years)")
+        ax1.set_ylabel("Zero (%)")
+        ax2.plot(curve.mats, curve.dfs, marker="o")
+        ax2.set_title("Discount Factors")
+        ax2.set_xlabel("T (years)")
+        ax2.set_ylabel("DF")
+        st.pyplot(fig, use_container_width=True)
+
+        # Quick forward example
+        colf1, colf2 = st.columns(2)
+        t1 = colf1.number_input("Forward start T1 (yrs)", value=1.0, step=0.25, min_value=0.0)
+        t2 = colf2.number_input("Forward end T2 (yrs)", value=2.0, step=0.25, min_value=0.01)
+        fwd = curve.get_fwd(t1, t2)
+        st.metric("Annual forward rate T1→T2", f"{fwd * 100:.3f}%")
+
+        # Store curve in session for Swaps tab
+        st.session_state["bootstrapped_curve"] = curve
+
+# =============================
+# TAB 7: Swaps
+# =============================
+with tab7:
+    st.subheader("Plain-Vanilla Interest Rate Swap")
+    st.caption("Uses the bootstrapped curve from the previous tab.")
+
+    curve: YieldCurve | None = st.session_state.get("bootstrapped_curve")
+    if curve is None:
+        st.info("Bootstrap a curve first in the **Yield Curve** tab.")
+    else:
+        colS1, colS2, colS3 = st.columns(3)
+        notional = colS1.number_input("Notional", min_value=1_000.0, value=1_000_000.0, step=50_000.0)
+        T_swap = colS2.number_input("Maturity T (years)", min_value=0.5, value=5.0, step=0.5)
+        freq = int(colS3.selectbox("Payments per year", options=[1, 2, 4], index=1))
+
+        s_par = par_swap_rate(curve, T_swap, freq)
+        st.metric("Par swap rate", f"{s_par * 100:.4f}%")
+
+        fixed_rate_user = st.number_input(
+            "Fixed rate to value (% p.a.)",
+            value=round(s_par * 100, 4),
+            step=0.01,
+            format="%.4f",
+        ) / 100.0
+
+        pv = swap_pv(curve, T_swap, fixed_rate_user, notional, freq)
+        st.metric("Swap PV (Fixed - Float)", f"{pv:,.2f}")
+
+        dv01_val = dv01(curve, T_swap, fixed_rate_user, notional, freq, bp=1.0)
+        st.metric("DV01 (per +1bp shift)", f"{dv01_val:,.2f}")
+
 st.caption(
-    "Options: European (BSM), American (CRR). IV smiles & surface. "
-    "Bonds: price, YTM, duration, convexity. Rates are nominal p.a. unless stated."
+    "European options (BSM) with Greeks & IV; CRR American pricing; smiles & surfaces; "
+    "bonds (price, YTM, duration, convexity); bootstrapped zero curve; plain-vanilla IRS (par rate, PV, DV01)."
 )
