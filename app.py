@@ -34,6 +34,24 @@ from date_utils import parse_date
 from forwards import forward_price, forward_price_from_curve
 from black76 import black76_price, black76_greeks, implied_vol_b76, black76_price_df, black76_greeks_df
 
+# ---------------------------
+# Micro-caching wrappers
+# ---------------------------
+@st.cache_data(show_spinner=False, ttl=300)
+def cached_bootstrap_curve(
+    deposits, bonds, valuation_date: date | None = None, day_count: str = "ACT/365F"
+):
+    # Import inside to avoid circulars in some environments
+    from yield_curve import bootstrap_curve as _bootstrap_curve
+    return _bootstrap_curve(deposits, bonds, valuation_date=valuation_date, day_count=day_count)
+
+@st.cache_data(show_spinner=False, ttl=300)
+def cached_compute_chain_iv(raw_df: pd.DataFrame, S0: float, r: float, q: float, default_T: float, default_type: str, sigma_seed: float) -> pd.DataFrame:
+    from vol_surface import compute_chain_iv as _compute_chain_iv
+    return _compute_chain_iv(
+        raw_df, S0=S0, r=r, q=q, default_T=default_T, default_type=default_type, sigma_seed=sigma_seed
+    )
+
 st.set_page_config(page_title="Option & Fixed-Income Analytics", page_icon="📊", layout="wide")
 st.title("📊 Option & Fixed-Income Analytics Dashboard")
 
@@ -70,7 +88,7 @@ else:
 
 opt_type = st.sidebar.radio("Option type", ["Call", "Put"], horizontal=True)
 
-# Tabs (including new Futures & Black-76)
+# Tabs (including Futures & Black-76)
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
     [
         "Option Pricer",
@@ -226,31 +244,54 @@ with tab3:
                     df["otype"] = opt_type.lower()
 
                 if price_series is not None:
-                    iv_list, tag_list = [], []
-                    for k, px, t, ty in zip(df["K"], price_series, df["T_row"], df["otype"]):
-                        _in = OptionInput(S0=S0, K=float(k), r=r, sigma=max(sigma, 1e-6), T=float(t), q=q)
-                        iv = implied_vol(float(px), _in, ty)
-                        if iv is None:
-                            iv_list.append(float("nan")); tag_list.append("no-root")
-                        else:
-                            iv_list.append(iv)
-                            G_row = bs_greeks(_in)
-                            tag_list.append(moneyness_tags(S0, float(k), G_row["d1"])["tag"])
+                    # >>> replaced compute_chain_iv(...) with cached_compute_chain_iv(...)
+                    df_iv = cached_compute_chain_iv(
+                        df.assign(Price=price_series)[["K", "T_row", "otype"]].rename(columns={"T_row": "T"}).join(
+                            pd.DataFrame({"MarketPrice": price_series})
+                        ),
+                        S0=S0, r=r, q=q, default_T=T, default_type=opt_type.lower(), sigma_seed=max(sigma, 1e-6)
+                    )
+                    # If your compute_chain_iv expects original wide CSV, you can instead just call:
+                    # df_iv = cached_compute_chain_iv(chain_df, S0=S0, r=r, q=q, default_T=T, default_type=opt_type.lower(), sigma_seed=max(sigma, 1e-6))
 
-                    df["MarketPrice"] = price_series; df["IV"] = iv_list; df["IV_%"] = df["IV"] * 100.0; df["Tag"] = tag_list
-                    st.dataframe(df[["K", "T_row", "otype", "MarketPrice", "IV_%", "Tag"]].rename(columns={"T_row": "T"}).style.format({"MarketPrice": "{:.4f}", "IV_%": "{:.3f}"}), use_container_width=True)
+                    # For display, if df_iv already returns IV etc. use it directly. Else fallback to manual (kept from earlier logic).
+                    if {"K", "T", "otype", "IV"}.issubset(df_iv.columns):
+                        out_df = df_iv.copy()
+                    else:
+                        # Fall back to manual per-row solver if your compute_chain_iv returns raw
+                        iv_list, tag_list, t_list = [], [], []
+                        for k, px, t, ty in zip(df["K"], price_series, df["T_row"], df["otype"]):
+                            _in = OptionInput(S0=S0, K=float(k), r=r, sigma=max(sigma, 1e-6), T=float(t), q=q)
+                            iv = implied_vol(float(px), _in, ty)
+                            if iv is None:
+                                iv_list.append(float("nan")); tag_list.append("no-root")
+                            else:
+                                iv_list.append(iv)
+                                G_row = bs_greeks(_in)
+                                tag_list.append(moneyness_tags(S0, float(k), G_row["d1"])["tag"])
+                            t_list.append(t)
+                        out_df = pd.DataFrame({"K": df["K"], "T": t_list, "otype": df["otype"], "MarketPrice": price_series, "IV": iv_list})
+                        out_df["IV_%"] = out_df["IV"] * 100.0
+                        out_df["Tag"] = tag_list
+
+                    st.dataframe(
+                        out_df[["K", "T", "otype", "MarketPrice", "IV", "IV_%", "Tag"]]
+                        .sort_values(["T", "K"])
+                        .style.format({"MarketPrice": "{:.4f}", "IV": "{:.6f}", "IV_%": "{:.3f}"}),
+                        use_container_width=True
+                    )
 
                     st.markdown("**IV Smile (IV vs Strike)**")
-                    valid = df.dropna(subset=["IV"])
+                    valid = out_df.dropna(subset=["IV"])
                     if not valid.empty:
                         for tval in sorted(valid["T"].unique()):
                             sub = valid[valid["T"] == tval].sort_values("K")
                             fig, ax = plt.subplots()
-                            ax.plot(sub["K"], sub["IV_%"], marker="o")
+                            ax.plot(sub["K"], sub["IV"] * 100.0, marker="o")
                             ax.set_xlabel("Strike (K)"); ax.set_ylabel("IV (%)"); ax.set_title(f"T={tval:.4f} yrs")
                             st.pyplot(fig, use_container_width=True)
 
-                    out = df.to_csv(index=False).encode("utf-8")
+                    out = out_df.sort_values(["T", "K"]).to_csv(index=False).encode("utf-8")
                     st.download_button("Download processed chain (CSV)", data=out, file_name="options_chain_with_iv.csv", mime="text/csv")
         except Exception as e:
             st.error(f"Could not process CSV: {e}")
@@ -262,8 +303,15 @@ with tab4:
     if surf_file is not None:
         try:
             raw = pd.read_csv(surf_file)
-            df_iv = compute_chain_iv(raw, S0=S0, r=r, q=q, default_T=T, default_type=opt_type.lower(), sigma_seed=max(sigma, 1e-6))
-            st.dataframe(df_iv[["K", "T", "otype", "MarketPrice", "IV_%", "Tag"]].sort_values(["T", "K"]).style.format({"MarketPrice": "{:.4f}", "IV_%": "{:.3f}"}), use_container_width=True)
+            # >>> replaced compute_chain_iv(...) with cached_compute_chain_iv(...)
+            df_iv = cached_compute_chain_iv(
+                raw, S0=S0, r=r, q=q, default_T=T, default_type=opt_type.lower(), sigma_seed=max(sigma, 1e-6)
+            )
+            st.dataframe(
+                df_iv[["K", "T", "otype", "MarketPrice", "IV_%", "Tag"]].sort_values(["T", "K"])
+                .style.format({"MarketPrice": "{:.4f}", "IV_%": "{:.3f}"}),
+                use_container_width=True
+            )
 
             valid = df_iv.dropna(subset=["IV"])
             if not valid.empty:
@@ -392,7 +440,8 @@ with tab6:
                 pass
         if st.button("Bootstrap Curve (Numeric)", type="primary"):
             try:
-                curve = bootstrap_curve(deposits, bonds)
+                # >>> replaced bootstrap_curve(...) with cached_bootstrap_curve(...)
+                curve = cached_bootstrap_curve(deposits, bonds)
                 st.session_state["bootstrapped_curve"] = curve
                 st.success("Curve bootstrapped.")
             except Exception as e:
@@ -426,7 +475,8 @@ with tab6:
 
         if st.button("Bootstrap Curve (Dates)", type="primary"):
             try:
-                curve = bootstrap_curve(deposits, bonds, valuation_date=curve_val_date, day_count=dc_curve)
+                # >>> replaced bootstrap_curve(...) with cached_bootstrap_curve(...)
+                curve = cached_bootstrap_curve(deposits, bonds, valuation_date=curve_val_date, day_count=dc_curve)
                 st.session_state["bootstrapped_curve"] = curve
                 st.success("Curve bootstrapped.")
             except Exception as e:
@@ -465,7 +515,7 @@ with tab7:
         st.metric("Swap PV (Fixed - Float)", f"{swap_pv(curve, T_swap, fixed_rate_user, notional, freq):,.2f}")
         st.metric("DV01 (per +1bp shift)", f"{dv01(curve, T_swap, fixed_rate_user, notional, freq, bp=1.0):,.2f}")
 
-# ===== TAB 8: Futures & Black-76 (now curve-aware) =====
+# ===== TAB 8: Futures & Black-76 (curve-aware) =====
 with tab8:
     st.subheader("Futures/Forwards & Black-76 Options")
     st.caption("Choose discounting from a flat continuous rate or from the bootstrapped curve.")
@@ -558,5 +608,5 @@ with tab8:
 
 st.caption(
     "Date-aware maturities; BSM/CRR options; smiles & surfaces; bonds; bootstrapped curve; "
-    "swaps; and curve-aware futures + Black-76 (prices, Greeks, IV)."
+    "swaps; and curve-aware futures + Black-76 (prices, Greeks, IV). Caching enabled for curve bootstrap and IV chains."
 )
