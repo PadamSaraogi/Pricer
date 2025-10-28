@@ -61,73 +61,110 @@ def cached_compute_chain_iv(raw_df: pd.DataFrame, S0: float, r: float, q: float,
 st.set_page_config(page_title="Option & Fixed-Income Analytics", page_icon="📊", layout="wide")
 st.title("📊 Option & Fixed-Income Analytics Dashboard")
 
-# Sidebar — global option inputs
-st.sidebar.header("Global Inputs — Options")
-use_dates = st.sidebar.toggle("Use Dates for maturities", value=False, help="Compute T from dates using day-counts.")
+# ========== Shared UI helper for Options inputs (inside tabs) ==========
+def render_options_inputs(defaults_key: str = "opt_defaults"):
+    """
+    Renders the full set of options inputs INSIDE the current tab (no sidebar).
+    Returns: dict with S0, K, r, sigma, T, q, opt_type, dc, val_date, S_for_options
+    """
+    # Defaults in session (so switching tabs keeps values)
+    if defaults_key not in st.session_state:
+        st.session_state[defaults_key] = {
+            "use_dates": False,
+            "S0": 100.0, "K": 105.0,
+            "r": 0.05, "sigma": 0.20, "T": 0.5, "q": 0.0,
+            "opt_type": "Call",
+            "dc": "ACT/365F",
+            "val_date": str(date.today()),
+            "expiry": str(date.today()),
+            "use_disc_div": False,
+            "div_dc": "ACT/365F",
+            "div_rows": pd.DataFrame({
+                "Pay Date (YYYY-MM-DD)": [str(date.today())],
+                "Amount": [1.00],
+            }),
+        }
 
-colA, colB = st.sidebar.columns(2)
-S0 = colA.number_input("Spot price (S₀)", min_value=0.01, value=100.0, step=1.0)
-K = colB.number_input("Strike (K)", min_value=0.01, value=105.0, step=1.0)
+    s = st.session_state[defaults_key]
 
-col1, col2 = st.sidebar.columns(2)
-r = col1.number_input("Risk-free r (annual, %, cont.)", value=5.0, step=0.25, format="%.2f") / 100.0
-sigma = col2.number_input("Volatility σ (annual, %)", min_value=0.01, value=20.0, step=0.5, format="%.2f") / 100.0
+    with st.expander("⚙️ Options Inputs", expanded=True):
+        use_dates = st.toggle("Use Dates for maturities", value=s["use_dates"],
+                              help="Compute T from dates using day-counts.")
+        s["use_dates"] = use_dates
 
-col3, col4 = st.sidebar.columns(2)
-if use_dates:
-    dc: DayCount = st.sidebar.selectbox("Day-count (for T)", ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"], index=0)
-    val_date_str = st.sidebar.text_input("Valuation date (YYYY-MM-DD)", value=str(date.today()))
-    expiry_str = st.sidebar.text_input("Option expiry (YYYY-MM-DD)", value=str(date.today()))
-    try:
-        val_date = parse_date(val_date_str)
-        exp_date = parse_date(expiry_str)
-        T = year_fraction(val_date, exp_date, dc)
-    except Exception:
-        val_date = date.today()
-        exp_date = date.today()
-        T = 0.0
-    q = col4.number_input("Dividend yield q (annual, %, cont.)", value=0.0, step=0.25, format="%.2f") / 100.0
-else:
-    T = col3.number_input("Time to expiry T (years)", min_value=0.00274, value=0.5, step=0.01, help="0.00274 ≈ 1 day")
-    q = col4.number_input("Dividend yield q (annual, %, cont.)", value=0.0, step=0.25, format="%.2f") / 100.0
-    dc: DayCount = "ACT/365F"
-    val_date = date.today()
+        colA, colB = st.columns(2)
+        S0 = colA.number_input("Spot price (S₀)", min_value=0.01, value=float(s["S0"]), step=1.0)
+        K = colB.number_input("Strike (K)", min_value=0.01, value=float(s["K"]), step=1.0)
+        s["S0"], s["K"] = S0, K
 
-opt_type = st.sidebar.radio("Option type", ["Call", "Put"], horizontal=True)
+        col1, col2 = st.columns(2)
+        r = col1.number_input("Risk-free r (annual, %, cont.)", value=float(s["r"]*100), step=0.25, format="%.2f") / 100.0
+        sigma = col2.number_input("Volatility σ (annual, %)", min_value=0.01, value=float(s["sigma"]*100), step=0.5, format="%.2f") / 100.0
+        s["r"], s["sigma"] = r, sigma
 
-# ---- Discrete cash dividends editor ----
-st.sidebar.markdown("---")
-use_disc_div = st.sidebar.toggle("Enable discrete **cash** dividends", value=False)
-div_dc: DayCount = st.sidebar.selectbox("Day-count for dividends", ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"], index=0, disabled=not use_disc_div)
+        if use_dates:
+            col3 = st.columns(1)[0]
+            dc: DayCount = st.selectbox("Day-count (for T)", ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"],
+                                        index=["ACT/365F","ACT/360","30/360US","30/360EU","ACT/ACT"].index(s["dc"]))
+            val_date_str = st.text_input("Valuation date (YYYY-MM-DD)", value=s["val_date"])
+            expiry_str = st.text_input("Option expiry (YYYY-MM-DD)", value=s["expiry"])
+            try:
+                val_date = parse_date(val_date_str)
+                exp_date = parse_date(expiry_str)
+                T = year_fraction(val_date, exp_date, dc)
+            except Exception:
+                val_date = date.today()
+                T = 0.0
+            q = st.number_input("Dividend yield q (annual, %, cont.)", value=float(s["q"]*100), step=0.25, format="%.2f") / 100.0
+            s["dc"], s["val_date"], s["expiry"], s["q"] = dc, val_date_str, expiry_str, q
+        else:
+            col3, col4 = st.columns(2)
+            T = col3.number_input("Time to expiry T (years)", min_value=0.00274, value=float(s["T"]), step=0.01, help="0.00274 ≈ 1 day")
+            q = col4.number_input("Dividend yield q (annual, %, cont.)", value=float(s["q"]*100), step=0.25, format="%.2f") / 100.0
+            dc: DayCount = "ACT/365F"
+            val_date = date.today()
+            s["T"], s["q"] = T, q
 
-div_default = pd.DataFrame(
-    {
-        "Pay Date (YYYY-MM-DD)": [str(date(val_date.year, min(val_date.month + 3, 12), min(val_date.day, 28)))],
-        "Amount": [1.00],
+        opt_type = st.radio("Option type", ["Call", "Put"], horizontal=True, index=0 if s["opt_type"]=="Call" else 1)
+        s["opt_type"] = opt_type
+
+        st.markdown("---")
+        use_disc_div = st.toggle("Enable discrete **cash** dividends", value=s["use_disc_div"])
+        s["use_disc_div"] = use_disc_div
+        div_dc: DayCount = st.selectbox("Day-count for dividends",
+                                        ["ACT/365F","ACT/360","30/360US","30/360EU","ACT/ACT"],
+                                        index=["ACT/365F","ACT/360","30/360US","30/360EU","ACT/ACT"].index(s["div_dc"]),
+                                        disabled=not use_disc_div)
+        s["div_dc"] = div_dc
+
+        dividends_list = []
+        if use_disc_div:
+            st.caption("Add future cash dividends (per share) that occur before option expiry.")
+            div_df = st.data_editor(s["div_rows"], num_rows="dynamic", use_container_width=True, key=f"disc_div_tbl_{defaults_key}")
+            s["div_rows"] = div_df
+            for _, row in div_df.iterrows():
+                try:
+                    dpay = parse_date(str(row["Pay Date (YYYY-MM-DD)"]))
+                    amt = float(row["Amount"])
+                    if amt > 0 and dpay > val_date:
+                        dividends_list.append(CashDividend(pay_date=dpay, amount=amt))
+                except Exception:
+                    pass
+
+        # Effective spot
+        if use_disc_div and len(dividends_list) > 0:
+            S_eff = spot_adjusted_for_dividends(S0, dividends_list, r_cont=r, valuation_date=val_date, dc=div_dc)
+            pv_div = S0 - S_eff
+            st.info(f"S₀,eff = S₀ − PV(divs) = {S0:.4f} − {pv_div:.4f} = **{S_eff:.4f}**")
+        else:
+            S_eff = S0
+
+    return {
+        "S0": S0, "K": K, "r": r, "sigma": sigma, "T": T, "q": q,
+        "opt_type": opt_type, "dc": dc, "val_date": val_date, "S_for_options": S_eff
     }
-)
-dividends_list = []
-if use_disc_div:
-    st.sidebar.caption("Add future cash dividends (per share) that occur before option expiry.")
-    div_table = st.sidebar.data_editor(div_default, num_rows="dynamic", use_container_width=True, key="disc_div_tbl")
-    for _, row in div_table.iterrows():
-        try:
-            dpay = parse_date(str(row["Pay Date (YYYY-MM-DD)"]))
-            amt = float(row["Amount"])
-            if amt > 0 and dpay > val_date:
-                dividends_list.append(CashDividend(pay_date=dpay, amount=amt))
-        except Exception:
-            pass
 
-# Effective spot for equity options
-if use_disc_div and len(dividends_list) > 0:
-    S_for_options = spot_adjusted_for_dividends(S0, dividends_list, r_cont=r, valuation_date=val_date, dc=div_dc)
-    pv_div = S0 - S_for_options
-    st.sidebar.info(f"S₀,eff = S₀ − PV(divs) = {S0:.4f} − {pv_div:.4f} = **{S_for_options:.4f}**")
-else:
-    S_for_options = S0
-
-# Tabs (added "Reports & Export")
+# ===================== TABS =====================
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
     [
         "Option Pricer",
@@ -144,8 +181,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
 
 # ===== TAB 1: Option Pricer (BSM) =====
 with tab1:
+    opts = render_options_inputs("opt_inputs_tab1")
     st.subheader("European Options — Black–Scholes")
-    st.caption("r and q are continuous. If discrete dividends enabled, we price with **S₀,eff = S₀ − PV(divs)**.")
 
     colm1, colm2, _ = st.columns(3)
     bid = colm1.number_input("Bid", min_value=0.0, value=0.0, step=0.1, key="bid1")
@@ -153,7 +190,7 @@ with tab1:
     mid = 0.5 * (bid + ask) if (bid > 0 and ask > 0 and ask >= bid) else None
     mkt_price = st.number_input("Single market price (for IV)", min_value=0.0, value=0.0, step=0.1, key="mkt1")
 
-    inp = OptionInput(S0=S_for_options, K=K, r=r, sigma=sigma, T=T, q=q)
+    inp = OptionInput(S0=opts["S_for_options"], K=opts["K"], r=opts["r"], sigma=opts["sigma"], T=opts["T"], q=opts["q"])
     try:
         call, put, d1, d2 = bs_prices(inp)
         G = bs_greeks(inp)
@@ -168,7 +205,7 @@ with tab1:
     m4.metric("d₂", f"{d2:,.4f}")
 
     st.subheader("Moneyness & Tags")
-    tag_info = moneyness_tags(S_for_options, K, d1)
+    tag_info = moneyness_tags(opts["S_for_options"], opts["K"], d1)
     mtc1, mtc2, mtc3, mtc4 = st.columns(4)
     mtc1.metric("S/K", tag_info["S_over_K"])
     mtc2.metric("log-moneyness", tag_info["log_moneyness"])
@@ -193,7 +230,7 @@ with tab1:
 
     st.subheader("Implied Volatility (from market price)")
     coliv1, coliv2 = st.columns(2)
-    otype = opt_type.lower()
+    otype = opts["opt_type"].lower()
     if mkt_price > 0:
         iv = implied_vol(mkt_price, inp, otype)
         coliv1.metric("IV (single price)" if iv is not None else "IV error", f"{iv*100:.3f}%" if iv else "No root")
@@ -202,36 +239,37 @@ with tab1:
         coliv2.metric("IV (Bid/Ask mid)" if iv_mid is not None else "IV error", f"{iv_mid*100:.3f}%" if iv_mid else "No root")
 
     st.subheader("Charts")
-    S_min = max(0.01, S_for_options * 0.4); S_max = S_for_options * 1.6
+    S_min = max(0.01, opts["S_for_options"] * 0.4); S_max = opts["S_for_options"] * 1.6
     S_grid = np.linspace(S_min, S_max, 200)
-    payoff = np.maximum(S_grid - K, 0.0) if opt_type == "Call" else np.maximum(K - S_grid, 0.0)
+    payoff = np.maximum(S_grid - opts["K"], 0.0) if opts["opt_type"] == "Call" else np.maximum(opts["K"] - S_grid, 0.0)
     fig1, ax1 = plt.subplots()
-    ax1.plot(S_grid, payoff, label=f"{opt_type} payoff at expiry")
+    ax1.plot(S_grid, payoff, label=f"{opts['opt_type']} payoff at expiry")
     ax1.axhline(0, linewidth=1); ax1.set_xlabel("Underlying price at expiry (S_T)"); ax1.set_ylabel("Payoff")
-    ax1.set_title(f"{opt_type} payoff at expiry (not PV)"); ax1.legend()
+    ax1.set_title(f"{opts['opt_type']} payoff at expiry (not PV)"); ax1.legend()
     st.pyplot(fig1, use_container_width=True)
 
     call_vals, put_vals = [], []
     for s in S_grid:
-        _in = OptionInput(S0=float(s), K=K, r=r, sigma=sigma, T=T, q=q)
+        _in = OptionInput(S0=float(s), K=opts["K"], r=opts["r"], sigma=opts["sigma"], T=opts["T"], q=opts["q"])
         c, p, *_ = bs_prices(_in)
         call_vals.append(c); put_vals.append(p)
     fig2, ax2 = plt.subplots()
-    if opt_type == "Call":
-        ax2.plot(S_grid, call_vals, label="Call value (today)"); ax2.scatter([S_for_options], [call], marker="o")
+    if opts["opt_type"] == "Call":
+        ax2.plot(S_grid, call_vals, label="Call value (today)"); ax2.scatter([opts["S_for_options"]], [call], marker="o")
     else:
-        ax2.plot(S_grid, put_vals, label="Put value (today)"); ax2.scatter([S_for_options], [put], marker="o")
+        ax2.plot(S_grid, put_vals, label="Put value (today)"); ax2.scatter([opts["S_for_options"]], [put], marker="o")
     ax2.set_xlabel("Spot (S₀,eff)"); ax2.set_ylabel("Option value today")
-    ax2.set_title(f"{opt_type} value vs effective spot (Black–Scholes)"); ax2.legend()
+    ax2.set_title(f"{opts['opt_type']} value vs effective spot (Black–Scholes)"); ax2.legend()
     st.pyplot(fig2, use_container_width=True)
 
 # ===== TAB 2: American (CRR) =====
 with tab2:
+    opts = render_options_inputs("opt_inputs_tab2")
     st.subheader("American vs European (CRR Binomial)")
     st.caption("Discrete dividends are applied via S₀,eff in the underlying start node.")
     steps = st.slider("CRR steps (accuracy vs speed)", min_value=25, max_value=1000, value=200, step=25, key="crr_steps")
-    inp = OptionInput(S0=S_for_options, K=K, r=r, sigma=sigma, T=T, q=q)
-    otype = opt_type.lower()
+    inp = OptionInput(S0=opts["S_for_options"], K=opts["K"], r=opts["r"], sigma=opts["sigma"], T=opts["T"], q=opts["q"])
+    otype = opts["opt_type"].lower()
     euro_tree = crr_price_european(inp, otype, steps)
     amer_tree = crr_price_american(inp, otype, steps)
     bs_euro = (bs_prices(inp)[0] if otype == "call" else bs_prices(inp)[1])
@@ -243,6 +281,7 @@ with tab2:
 
 # ===== TAB 3: Chain & Smiles =====
 with tab3:
+    opts = render_options_inputs("opt_inputs_tab3")
     st.subheader("Options Chain (CSV) → Bulk IV & Smiles")
     chain_file = st.file_uploader("Upload CSV with: K, Mid or Bid+Ask or Price; optional T (years), type (call/put)", type=["csv"], key="chain_upl")
     if chain_file is not None:
@@ -277,18 +316,18 @@ with tab3:
                     st.error("Provide Mid or Bid/Ask or Price column.")
                     price_series = None
 
-                df["T_row"] = df[col_T].astype(float) if col_T is not None else T
+                df["T_row"] = df[col_T].astype(float) if col_T is not None else opts["T"]
                 if col_ty is not None:
                     df["otype"] = df[col_ty].astype(str).lower().str.strip().replace({"c": "call", "p": "put"})
-                    df.loc[~df["otype"].isin(["call", "put"]), "otype"] = opt_type.lower()
+                    df.loc[~df["otype"].isin(["call", "put"]), "otype"] = opts["opt_type"].lower()
                 else:
-                    df["otype"] = opt_type.lower()
+                    df["otype"] = opts["opt_type"].lower()
 
                 if price_series is not None:
                     df_iv = cached_compute_chain_iv(
                         df.assign(MarketPrice=price_series),
-                        S0=S_for_options, r=r, q=q,
-                        default_T=T, default_type=opt_type.lower(), sigma_seed=max(sigma, 1e-6)
+                        S0=opts["S_for_options"], r=opts["r"], q=opts["q"],
+                        default_T=opts["T"], default_type=opts["opt_type"].lower(), sigma_seed=max(opts["sigma"], 1e-6)
                     )
 
                     if {"K", "T", "otype", "IV"}.issubset(df_iv.columns):
@@ -300,20 +339,20 @@ with tab3:
                         if "Tag" not in out_df.columns:
                             tags = []
                             for k in out_df["K"].values:
-                                tags.append("ITM" if (opt_type.lower()=="call" and S_for_options>k) or (opt_type.lower()=="put" and S_for_options<k) else "OTM")
+                                tags.append("ITM" if (opts["opt_type"].lower()=="call" and opts["S_for_options"]>k) or (opts["opt_type"].lower()=="put" and opts["S_for_options"]<k) else "OTM")
                             out_df["Tag"] = tags
                     else:
                         # Fallback manual solver
                         iv_list, tag_list, t_list = [], [], []
                         for k, px, t, ty in zip(df["K"], price_series, df["T_row"], df["otype"]):
-                            _in = OptionInput(S0=S_for_options, K=float(k), r=r, sigma=max(sigma, 1e-6), T=float(t), q=q)
+                            _in = OptionInput(S0=opts["S_for_options"], K=float(k), r=opts["r"], sigma=max(opts["sigma"], 1e-6), T=float(t), q=opts["q"])
                             iv = implied_vol(float(px), _in, ty)
                             if iv is None:
                                 iv_list.append(float("nan")); tag_list.append("no-root")
                             else:
                                 iv_list.append(iv)
                                 G_row = bs_greeks(_in)
-                                tag_list.append(moneyness_tags(S_for_options, float(k), G_row["d1"])["tag"])
+                                tag_list.append(moneyness_tags(opts["S_for_options"], float(k), G_row["d1"])["tag"])
                             t_list.append(t)
                         out_df = pd.DataFrame({"K": df["K"], "T": t_list, "otype": df["otype"], "MarketPrice": price_series, "IV": iv_list})
                         out_df["IV_%"] = out_df["IV"] * 100.0
@@ -343,13 +382,14 @@ with tab3:
 
 # ===== TAB 4: Vol Surface =====
 with tab4:
+    opts = render_options_inputs("opt_inputs_tab4")
     st.subheader("Volatility Surface (K × T)")
     surf_file = st.file_uploader("Upload multi-expiry CSV (K, T, price fields; optional type)", type=["csv"], key="surf_upl")
     if surf_file is not None:
         try:
             raw = pd.read_csv(surf_file)
             df_iv = cached_compute_chain_iv(
-                raw, S0=S_for_options, r=r, q=q, default_T=T, default_type=opt_type.lower(), sigma_seed=max(sigma, 1e-6)
+                raw, S0=opts["S_for_options"], r=opts["r"], q=opts["q"], default_T=opts["T"], default_type=opts["opt_type"].lower(), sigma_seed=max(opts["sigma"], 1e-6)
             )
             st.dataframe(
                 df_iv[["K", "T", "otype", "MarketPrice", "IV_%", "Tag"]].sort_values(["T", "K"])
@@ -427,8 +467,8 @@ with tab5:
 
     else:
         colD1, colD2, colD3 = st.columns(3)
-        val_d_str = colD1.text_input("Settlement / Valuation date (YYYY-MM-DD)", value=str(val_date))
-        mat_d_str = colD2.text_input("Maturity date (YYYY-MM-DD)", value=str(date(val_date.year + 5, val_date.month, min(val_date.day, 28))))
+        val_d_str = colD1.text_input("Settlement / Valuation date (YYYY-MM-DD)", value=str(date.today()))
+        mat_d_str = colD2.text_input("Maturity date (YYYY-MM-DD)", value=str(date.today().replace(year=date.today().year + 5)))
         dc_bond: DayCount = colD3.selectbox("Day-count", ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"], index=0)
         biz: BizConv = st.selectbox("Business-day convention", ["Following", "Modified Following", "Preceding"], index=0)
 
@@ -437,7 +477,7 @@ with tab5:
             mat_d = parse_date(mat_d_str)
         except Exception:
             st.error("Invalid date format. Use YYYY-MM-DD.")
-            settle_d, mat_d = val_date, val_date
+            settle_d, mat_d = date.today(), date.today()
 
         ytm_pct_d = st.number_input("Yield to maturity (% p.a.)", value=6.00, step=0.10, format="%.2f") / 100.0
         mode_bond_d = st.radio("Mode (dates)", ["Inputs → Price", "Price → YTM"], horizontal=True)
@@ -491,7 +531,7 @@ with tab6:
                 st.error(f"Bootstrapping error: {e}")
     else:
         dc_curve: DayCount = st.selectbox("Day-count for T", ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"], index=0)
-        val_date_str2 = st.text_input("Valuation date (YYYY-MM-DD)", value=str(val_date), key="curve_valdate")
+        val_date_str2 = st.text_input("Valuation date (YYYY-MM-DD)", value=str(date.today()), key="curve_valdate")
         try:
             curve_val_date = parse_date(val_date_str2)
         except Exception:
@@ -559,6 +599,7 @@ with tab7:
 
 # ===== TAB 8: Futures & Black-76 (curve-aware) =====
 with tab8:
+    opts = render_options_inputs("opt_inputs_tab8")
     st.subheader("Futures/Forwards & Black-76 Options")
     st.caption("Choose discounting from a flat continuous rate or from the bootstrapped curve.")
 
@@ -567,21 +608,22 @@ with tab8:
 
     colF0, colF1, colF2 = st.columns(3)
     mode_fut = colF0.radio("Forward input", ["Compute F₀ from S₀, r/q", "Enter F₀ directly"], horizontal=False)
-    K_fut = colF1.number_input("Strike (K)", min_value=0.0001, value=float(K), step=1.0, key="b76_k")
-    T_fut = colF2.number_input("T (years, for futures option)", min_value=0.00274, value=float(T), step=0.01, help="0.00274 ≈ 1 day", key="b76_T")
+    K_fut = colF1.number_input("Strike (K)", min_value=0.0001, value=float(opts["K"]), step=1.0, key="b76_k")
+    T_fut = colF2.number_input("T (years, for futures option)", min_value=0.00274, value=float(opts["T"]), step=0.01, help="0.00274 ≈ 1 day", key="b76_T")
 
+    # Compute/enter forward (keep dividends via q for forwards parity)
     if mode_fut.startswith("Compute"):
         if disc_src == "From curve (DF(T))" and curve is not None:
-            q_flat = st.number_input("Dividend/conv. yield q (%, cont.)", min_value=0.0, value=float(q * 100), step=0.25, format="%.2f", key="q_curve") / 100.0
-            F0 = forward_price_from_curve(S0, curve, T_fut, q_cont=q_flat)
+            q_flat = st.number_input("Dividend/conv. yield q (%, cont.)", min_value=0.0, value=float(opts["q"] * 100), step=0.25, format="%.2f", key="q_curve") / 100.0
+            F0 = forward_price_from_curve(opts["S0"], curve, T_fut, q_cont=q_flat)
         else:
-            F0 = forward_price(S0, r, q, T_fut)
+            F0 = forward_price(opts["S0"], opts["r"], opts["q"], T_fut)
     else:
-        F0 = colF0.number_input("F₀ (futures/forward)", min_value=0.0001, value=float(forward_price(S0, r, q, T_fut)), step=0.1, key="F0_direct")
+        F0 = colF0.number_input("F₀ (futures/forward)", min_value=0.0001, value=float(forward_price(opts["S0"], opts["r"], opts["q"], T_fut)), step=0.1, key="F0_direct")
 
     st.metric("F₀ (futures/forward)", f"{F0:,.4f}")
 
-    sigma_b76 = st.number_input("Volatility σ (annual, %)", min_value=0.01, value=20.0, step=0.5, format="%.2f", key="b76_sigma") / 100.0
+    sigma_b76 = st.number_input("Volatility σ (annual, %)", min_value=0.01, value=float(opts["sigma"]*100), step=0.5, format="%.2f", key="b76_sigma") / 100.0
     otype_b76 = st.radio("Option type (futures)", ["Call", "Put"], horizontal=True, key="b76_otype").lower()
 
     DF_T = None
@@ -595,15 +637,15 @@ with tab8:
     st.markdown("**Implied Volatility (from market price)**")
     mkt_b76 = st.number_input("Market option price (any currency)", min_value=0.0, value=0.0, step=0.1, key="b76_mkt")
     if mkt_b76 > 0:
-        iv76 = implied_vol_b76(mkt_b76, F0, K_fut, r=r, T=T_fut, otype=otype_b76, DF_T=DF_T)
+        iv76 = implied_vol_b76(mkt_b76, F0, K_fut, r=opts["r"], T=T_fut, otype=otype_b76, DF_T=DF_T)
         if iv76 is None:
             st.error("No valid IV found in [1e-6, 5.0] for these inputs.")
         else:
             st.metric("Black-76 IV", f"{iv76*100:.3f}%")
 
     if DF_T is None:
-        price_b76 = black76_price(F0, K_fut, r, T_fut, sigma_b76, otype_b76)
-        G76 = black76_greeks(F0, K_fut, r, T_fut, sigma_b76)
+        price_b76 = black76_price(F0, K_fut, opts["r"], T_fut, sigma_b76, otype_b76)
+        G76 = black76_greeks(F0, K_fut, opts["r"], T_fut, sigma_b76)
         delta_disp = G76['delta_fut']['call'] if otype_b76 == 'call' else G76['delta_fut']['put']
         gamma_disp = G76['gamma_fut']; vega_disp = G76['vega']
         theta_day = G76['theta_per_day']; rho_disp = G76['rho']
@@ -635,7 +677,7 @@ with tab8:
 
     F0_grid = np.linspace(max(0.01, F0 * 0.6), F0 * 1.4, 120)
     if DF_T is None:
-        values = [black76_price(fv, K_fut, r, T_fut, sigma_b76, otype_b76) for fv in F0_grid]
+        values = [black76_price(fv, K_fut, opts["r"], T_fut, sigma_b76, otype_b76) for fv in F0_grid]
     else:
         values = [black76_price_df(fv, K_fut, DF_T, T_fut, sigma_b76, otype_b76) for fv in F0_grid]
     figv, axv = plt.subplots()
@@ -646,28 +688,27 @@ with tab8:
 # ===== TAB 9: Reports & Export =====
 with tab9:
     st.subheader("Reports & Export")
+    # Use inputs from Tab 1 if available, else defaults via helper
+    base_opts = st.session_state.get("opt_inputs_tab1") and render_options_inputs("opt_inputs_tab1") or render_options_inputs("opt_inputs_reports")
 
-    # Build a small metrics dict for CSV
-    # Recompute key option numbers with current effective spot
-    oi = OptionInput(S0=S_for_options, K=K, r=r, sigma=sigma, T=T, q=q)
+    # Build metrics with current inputs
+    oi = OptionInput(S0=base_opts["S_for_options"], K=base_opts["K"], r=base_opts["r"], sigma=base_opts["sigma"], T=base_opts["T"], q=base_opts["q"])
     call_px, put_px, d1, d2 = bs_prices(oi)
     G = bs_greeks(oi)
 
     curve: YieldCurve | None = st.session_state.get("bootstrapped_curve")
-    curve_df = None
-    if curve is not None:
-        curve_df = curve.as_dataframe()
+    curve_df = curve.as_dataframe() if curve is not None else None
 
     metrics = {
-        "valuation_date": str(val_date),
-        "option_type": opt_type.lower(),
-        "S0": S0,
-        "S0_eff": S_for_options,
-        "K": K,
-        "T_years": T,
-        "r_cont": r,
-        "q_cont": q,
-        "sigma": sigma,
+        "valuation_date": str(base_opts["val_date"]),
+        "option_type": base_opts["opt_type"].lower(),
+        "S0": base_opts["S0"],
+        "S0_eff": base_opts["S_for_options"],
+        "K": base_opts["K"],
+        "T_years": base_opts["T"],
+        "r_cont": base_opts["r"],
+        "q_cont": base_opts["q"],
+        "sigma": base_opts["sigma"],
         "call_price": call_px,
         "put_price": put_px,
         "delta_call": G["delta"]["call"],
@@ -683,19 +724,18 @@ with tab9:
     }
 
     colR1, colR2 = st.columns(2)
-    # PDF export
     if colR1.button("Generate Options Report (PDF)", type="primary"):
         pdf_bytes = build_options_report_pdf(
-            S0=S0,
-            S0_eff=S_for_options,
-            K=K,
-            r=r,
-            q=q,
-            T=T,
-            sigma=sigma,
-            opt_type=opt_type,
-            valuation_date_str=str(val_date),
-            curve_df=curve_df if curve_df is not None else None,
+            S0=base_opts["S0"],
+            S0_eff=base_opts["S_for_options"],
+            K=base_opts["K"],
+            r=base_opts["r"],
+            q=base_opts["q"],
+            T=base_opts["T"],
+            sigma=base_opts["sigma"],
+            opt_type=base_opts["opt_type"],
+            valuation_date_str=str(base_opts["val_date"]),
+            curve_df=curve_df,
         )
         st.download_button(
             "Download options_report.pdf",
@@ -704,7 +744,6 @@ with tab9:
             mime="application/pdf",
         )
 
-    # CSV export
     if colR2.button("Export Key Metrics (CSV)"):
         csv_bytes = build_metrics_csv(metrics)
         st.download_button(
@@ -715,6 +754,6 @@ with tab9:
         )
 
 st.caption(
-    "Discrete cash dividends; BSM/CRR; smiles & surface; bonds; curve; swaps; futures & Black-76; "
-    "plus one-click **Reports & Export** (PDF/CSV)."
+    "All Options inputs now live **inside each tab** (no sidebar). Discrete dividends supported. "
+    "BSM/CRR; smiles & surface; bonds; bootstrapped curve; swaps; curve-aware Black-76; and PDF/CSV reports."
 )
