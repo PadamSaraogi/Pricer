@@ -30,9 +30,9 @@ from swaps import par_swap_rate, swap_pv, dv01
 from daycount import year_fraction, DayCount, BizConv
 from date_utils import parse_date
 
-# NEW imports
-from forwards import forward_price, ladder_forward_prices
-from black76 import black76_price, black76_greeks, implied_vol_b76
+# NEW: curve-aware forwards + Black-76
+from forwards import forward_price, forward_price_from_curve
+from black76 import black76_price, black76_greeks, implied_vol_b76, black76_price_df, black76_greeks_df
 
 st.set_page_config(page_title="Option & Fixed-Income Analytics", page_icon="📊", layout="wide")
 st.title("📊 Option & Fixed-Income Analytics Dashboard")
@@ -66,11 +66,11 @@ if use_dates:
 else:
     T = col3.number_input("Time to expiry T (years)", min_value=0.00274, value=0.5, step=0.01, help="0.00274 ≈ 1 day")
     q = col4.number_input("Dividend yield q (annual, %, cont.)", value=0.0, step=0.25, format="%.2f") / 100.0
-    val_date = date.today()  # default for other tabs
+    val_date = date.today()
 
 opt_type = st.sidebar.radio("Option type", ["Call", "Put"], horizontal=True)
 
-# Tabs (added Futures & Black-76 as tab8)
+# Tabs (including new Futures & Black-76)
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
     [
         "Option Pricer",
@@ -89,7 +89,6 @@ with tab1:
     st.subheader("European Options — Black–Scholes")
     st.caption("r and q are treated as continuously-compounded here.")
 
-    # Optional market IV
     colm1, colm2, _ = st.columns(3)
     bid = colm1.number_input("Bid", min_value=0.0, value=0.0, step=0.1, key="bid1")
     ask = colm2.number_input("Ask", min_value=0.0, value=0.0, step=0.1, key="ask1")
@@ -466,49 +465,78 @@ with tab7:
         st.metric("Swap PV (Fixed - Float)", f"{swap_pv(curve, T_swap, fixed_rate_user, notional, freq):,.2f}")
         st.metric("DV01 (per +1bp shift)", f"{dv01(curve, T_swap, fixed_rate_user, notional, freq, bp=1.0):,.2f}")
 
-# ===== TAB 8: Futures & Black-76 =====
+# ===== TAB 8: Futures & Black-76 (now curve-aware) =====
 with tab8:
     st.subheader("Futures/Forwards & Black-76 Options")
-    st.caption("Cost-of-carry forward pricing and options on futures (Black–76). Rates r and q are continuous.")
+    st.caption("Choose discounting from a flat continuous rate or from the bootstrapped curve.")
 
-    colF1, colF2, colF3 = st.columns(3)
-    mode_fut = colF1.radio("Forward input", ["Compute F₀ from S₀, r, q, T", "Enter F₀ directly"], horizontal=False)
-    K_fut = colF2.number_input("Strike (K)", min_value=0.0001, value=float(K), step=1.0, key="b76_k")
-    T_fut = colF3.number_input("T (years, for futures option)", min_value=0.00274, value=float(T), step=0.01, help="0.00274 ≈ 1 day", key="b76_T")
+    curve: YieldCurve | None = st.session_state.get("bootstrapped_curve")
+    disc_src = st.radio("Discounting source", ["Flat r (continuous)", "From curve (DF(T))"], horizontal=True)
 
+    colF0, colF1, colF2 = st.columns(3)
+    mode_fut = colF0.radio("Forward input", ["Compute F₀ from S₀, r/q", "Enter F₀ directly"], horizontal=False)
+    K_fut = colF1.number_input("Strike (K)", min_value=0.0001, value=float(K), step=1.0, key="b76_k")
+    T_fut = colF2.number_input("T (years, for futures option)", min_value=0.00274, value=float(T), step=0.01, help="0.00274 ≈ 1 day", key="b76_T")
+
+    # Compute/enter forward
     if mode_fut.startswith("Compute"):
-        F0 = forward_price(S0, r, q, T_fut)
+        if disc_src == "From curve (DF(T))" and curve is not None:
+            q_flat = st.number_input("Dividend/conv. yield q (%, cont.)", min_value=0.0, value=float(q * 100), step=0.25, format="%.2f", key="q_curve") / 100.0
+            F0 = forward_price_from_curve(S0, curve, T_fut, q_cont=q_flat)
+        else:
+            F0 = forward_price(S0, r, q, T_fut)
     else:
-        F0 = colF1.number_input("F₀ (futures/forward)", min_value=0.0001, value=float(forward_price(S0, r, q, T_fut)), step=0.1, key="F0_direct")
+        F0 = colF0.number_input("F₀ (futures/forward)", min_value=0.0001, value=float(forward_price(S0, r, q, T_fut)), step=0.1, key="F0_direct")
 
     st.metric("F₀ (futures/forward)", f"{F0:,.4f}")
+
     sigma_b76 = st.number_input("Volatility σ (annual, %)", min_value=0.01, value=20.0, step=0.5, format="%.2f", key="b76_sigma") / 100.0
     otype_b76 = st.radio("Option type (futures)", ["Call", "Put"], horizontal=True, key="b76_otype").lower()
 
-    # Market IV input
+    # DF(T) selection for pricing & IV
+    DF_T = None
+    if disc_src == "From curve (DF(T))":
+        if curve is None:
+            st.info("No curve in session. Bootstrap one in the **Yield Curve** tab, or switch to Flat r.")
+        else:
+            DF_T = curve.get_df(T_fut)
+            st.metric("DF(T) from curve", f"{DF_T:.6f}")
+
+    # IV from market
     st.markdown("**Implied Volatility (from market price)**")
     mkt_b76 = st.number_input("Market option price (any currency)", min_value=0.0, value=0.0, step=0.1, key="b76_mkt")
     if mkt_b76 > 0:
-        iv76 = implied_vol_b76(mkt_b76, F0, K_fut, r, T_fut, otype_b76)
+        iv76 = implied_vol_b76(mkt_b76, F0, K_fut, r=r, T=T_fut, otype=otype_b76, DF_T=DF_T)
         if iv76 is None:
             st.error("No valid IV found in [1e-6, 5.0] for these inputs.")
         else:
             st.metric("Black-76 IV", f"{iv76*100:.3f}%")
 
-    # Pricing & Greeks
-    price_b76 = black76_price(F0, K_fut, r, T_fut, sigma_b76, otype_b76)
-    G76 = black76_greeks(F0, K_fut, r, T_fut, sigma_b76)
+    # Pricing & Greeks with selected discounting source
+    if DF_T is None:
+        price_b76 = black76_price(F0, K_fut, r, T_fut, sigma_b76, otype_b76)
+        G76 = black76_greeks(F0, K_fut, r, T_fut, sigma_b76)
+        delta_disp = G76['delta_fut']['call'] if otype_b76 == 'call' else G76['delta_fut']['put']
+        gamma_disp = G76['gamma_fut']; vega_disp = G76['vega']
+        theta_day = G76['theta_per_day']; rho_disp = G76['rho']
+    else:
+        price_b76 = black76_price_df(F0, K_fut, DF_T, T_fut, sigma_b76, otype_b76)
+        G76 = black76_greeks_df(F0, K_fut, DF_T, T_fut, sigma_b76)
+        delta_disp = G76['delta_fut']['call'] if otype_b76 == 'call' else G76['delta_fut']['put']
+        gamma_disp = G76['gamma_fut']; vega_disp = G76['vega']
+        theta_day = G76['theta_per_day']; rho_disp = G76['rho_df']
+
     c1, c2, c3 = st.columns(3)
     c1.metric("Option price", f"{price_b76:,.4f}")
-    c2.metric("Δ (futures)", f"{G76['delta_fut']['call'] if otype_b76=='call' else G76['delta_fut']['put']:.6f}")
-    c3.metric("Γ (futures)", f"{G76['gamma_fut']:.6f}")
+    c2.metric("Δ (futures)", f"{delta_disp:.6f}")
+    c3.metric("Γ (futures)", f"{gamma_disp:.6f}")
 
     c4, c5, c6 = st.columns(3)
-    c4.metric("Vega (per 1.0 σ)", f"{G76['vega']:,.6f}")
-    c5.metric("Theta/day", f"{G76['theta_per_day']:,.6f}")
-    c6.metric("Rho (per 1.0 r)", f"{G76['rho']:,.6f}")
+    c4.metric("Vega (per 1.0 σ)", f"{vega_disp:,.6f}")
+    c5.metric("Theta/day", f"{theta_day:,.6f}")
+    c6.metric(("Rho (per 1.0 r)" if DF_T is None else "Sensitivity to DF(T)"), f"{rho_disp:,.6f}")
 
-    # Charts: payoff at expiry vs F_T and premium vs F0
+    # Charts
     st.subheader("Charts")
     F_grid = np.linspace(max(0.01, F0 * 0.4), F0 * 1.6, 200)
     payoff_call = np.maximum(F_grid - K_fut, 0.0)
@@ -518,16 +546,17 @@ with tab8:
     axp.axhline(0, linewidth=1); axp.set_xlabel("F_T"); axp.set_ylabel("Payoff"); axp.legend()
     st.pyplot(figp, use_container_width=True)
 
-    # Value today vs F0 (hold K, sigma fixed)
     F0_grid = np.linspace(max(0.01, F0 * 0.6), F0 * 1.4, 120)
-    values = [black76_price(fv, K_fut, r, T_fut, sigma_b76, otype_b76) for fv in F0_grid]
+    if DF_T is None:
+        values = [black76_price(fv, K_fut, r, T_fut, sigma_b76, otype_b76) for fv in F0_grid]
+    else:
+        values = [black76_price_df(fv, K_fut, DF_T, T_fut, sigma_b76, otype_b76) for fv in F0_grid]
     figv, axv = plt.subplots()
-    axv.plot(F0_grid, values, label="Option value today")
-    axv.scatter([F0], [price_b76], marker="o")
+    axv.plot(F0_grid, values, label="Option value today"); axv.scatter([F0], [price_b76], marker="o")
     axv.set_xlabel("F₀"); axv.set_ylabel("Option value"); axv.set_title("Value vs F₀"); axv.legend()
     st.pyplot(figv, use_container_width=True)
 
 st.caption(
     "Date-aware maturities; BSM/CRR options; smiles & surfaces; bonds; bootstrapped curve; "
-    "swaps; and now futures + Black-76 (prices, Greeks, IV)."
+    "swaps; and curve-aware futures + Black-76 (prices, Greeks, IV)."
 )
