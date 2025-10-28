@@ -4,6 +4,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 from datetime import date
+from io import BytesIO
 
 from bs_core import (
     OptionInput,
@@ -30,18 +31,15 @@ from swaps import par_swap_rate, swap_pv, dv01
 from daycount import year_fraction, DayCount, BizConv
 from date_utils import parse_date
 
-# NEW: forwards & Black-76 (curve-aware)
+# forwards & Black-76
 from forwards import forward_price, forward_price_from_curve
-from black76 import (
-    black76_price,
-    black76_greeks,
-    implied_vol_b76,
-    black76_price_df,
-    black76_greeks_df,
-)
+from black76 import black76_price, black76_greeks, implied_vol_b76, black76_price_df, black76_greeks_df
 
-# NEW: discrete dividends
+# discrete dividends
 from dividends import CashDividend, spot_adjusted_for_dividends
+
+# reports
+from reports import build_options_report_pdf, build_metrics_csv
 
 # ---------------------------
 # Micro-caching wrappers
@@ -97,7 +95,7 @@ else:
 
 opt_type = st.sidebar.radio("Option type", ["Call", "Put"], horizontal=True)
 
-# ---- NEW: Discrete cash dividends editor ----
+# ---- Discrete cash dividends editor ----
 st.sidebar.markdown("---")
 use_disc_div = st.sidebar.toggle("Enable discrete **cash** dividends", value=False)
 div_dc: DayCount = st.sidebar.selectbox("Day-count for dividends", ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"], index=0, disabled=not use_disc_div)
@@ -108,7 +106,6 @@ div_default = pd.DataFrame(
         "Amount": [1.00],
     }
 )
-div_table = None
 dividends_list = []
 if use_disc_div:
     st.sidebar.caption("Add future cash dividends (per share) that occur before option expiry.")
@@ -122,7 +119,7 @@ if use_disc_div:
         except Exception:
             pass
 
-# Compute effective spot for **equity option** pricing tabs
+# Effective spot for equity options
 if use_disc_div and len(dividends_list) > 0:
     S_for_options = spot_adjusted_for_dividends(S0, dividends_list, r_cont=r, valuation_date=val_date, dc=div_dc)
     pv_div = S0 - S_for_options
@@ -130,8 +127,8 @@ if use_disc_div and len(dividends_list) > 0:
 else:
     S_for_options = S0
 
-# Tabs
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+# Tabs (added "Reports & Export")
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
     [
         "Option Pricer",
         "American (CRR)",
@@ -141,6 +138,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
         "Yield Curve",
         "Swaps",
         "Futures & Black-76",
+        "Reports & Export",
     ]
 )
 
@@ -287,7 +285,6 @@ with tab3:
                     df["otype"] = opt_type.lower()
 
                 if price_series is not None:
-                    # Use effective spot for IV (discrete dividends)
                     df_iv = cached_compute_chain_iv(
                         df.assign(MarketPrice=price_series),
                         S0=S_for_options, r=r, q=q,
@@ -301,10 +298,8 @@ with tab3:
                         if "MarketPrice" not in out_df.columns:
                             out_df["MarketPrice"] = price_series.values
                         if "Tag" not in out_df.columns:
-                            # add tags with the (effective) spot
                             tags = []
                             for k in out_df["K"].values:
-                                d1_approx = 0.0  # we don't have per-row d1; tag off S/K only
                                 tags.append("ITM" if (opt_type.lower()=="call" and S_for_options>k) or (opt_type.lower()=="put" and S_for_options<k) else "OTM")
                             out_df["Tag"] = tags
                     else:
@@ -353,7 +348,6 @@ with tab4:
     if surf_file is not None:
         try:
             raw = pd.read_csv(surf_file)
-            # Use effective spot when transforming prices→IV
             df_iv = cached_compute_chain_iv(
                 raw, S0=S_for_options, r=r, q=q, default_T=T, default_type=opt_type.lower(), sigma_seed=max(sigma, 1e-6)
             )
@@ -576,7 +570,6 @@ with tab8:
     K_fut = colF1.number_input("Strike (K)", min_value=0.0001, value=float(K), step=1.0, key="b76_k")
     T_fut = colF2.number_input("T (years, for futures option)", min_value=0.00274, value=float(T), step=0.01, help="0.00274 ≈ 1 day", key="b76_T")
 
-    # Compute/enter forward (we keep futures as-is; discrete cash dividends handled via q here)
     if mode_fut.startswith("Compute"):
         if disc_src == "From curve (DF(T))" and curve is not None:
             q_flat = st.number_input("Dividend/conv. yield q (%, cont.)", min_value=0.0, value=float(q * 100), step=0.25, format="%.2f", key="q_curve") / 100.0
@@ -650,7 +643,78 @@ with tab8:
     axv.set_xlabel("F₀"); axv.set_ylabel("Option value"); axv.set_title("Value vs F₀"); axv.legend()
     st.pyplot(figv, use_container_width=True)
 
+# ===== TAB 9: Reports & Export =====
+with tab9:
+    st.subheader("Reports & Export")
+
+    # Build a small metrics dict for CSV
+    # Recompute key option numbers with current effective spot
+    oi = OptionInput(S0=S_for_options, K=K, r=r, sigma=sigma, T=T, q=q)
+    call_px, put_px, d1, d2 = bs_prices(oi)
+    G = bs_greeks(oi)
+
+    curve: YieldCurve | None = st.session_state.get("bootstrapped_curve")
+    curve_df = None
+    if curve is not None:
+        curve_df = curve.as_dataframe()
+
+    metrics = {
+        "valuation_date": str(val_date),
+        "option_type": opt_type.lower(),
+        "S0": S0,
+        "S0_eff": S_for_options,
+        "K": K,
+        "T_years": T,
+        "r_cont": r,
+        "q_cont": q,
+        "sigma": sigma,
+        "call_price": call_px,
+        "put_price": put_px,
+        "delta_call": G["delta"]["call"],
+        "delta_put": G["delta"]["put"],
+        "gamma": G["gamma"],
+        "vega_per_1pct": G["vega_per_1pct"],
+        "theta_day_call": G["theta_per_day"]["call"],
+        "theta_day_put": G["theta_per_day"]["put"],
+        "rho_call": G["rho"]["call"],
+        "rho_put": G["rho"]["put"],
+        "d1": d1,
+        "d2": d2,
+    }
+
+    colR1, colR2 = st.columns(2)
+    # PDF export
+    if colR1.button("Generate Options Report (PDF)", type="primary"):
+        pdf_bytes = build_options_report_pdf(
+            S0=S0,
+            S0_eff=S_for_options,
+            K=K,
+            r=r,
+            q=q,
+            T=T,
+            sigma=sigma,
+            opt_type=opt_type,
+            valuation_date_str=str(val_date),
+            curve_df=curve_df if curve_df is not None else None,
+        )
+        st.download_button(
+            "Download options_report.pdf",
+            data=pdf_bytes,
+            file_name="options_report.pdf",
+            mime="application/pdf",
+        )
+
+    # CSV export
+    if colR2.button("Export Key Metrics (CSV)"):
+        csv_bytes = build_metrics_csv(metrics)
+        st.download_button(
+            "Download metrics.csv",
+            data=csv_bytes,
+            file_name="metrics.csv",
+            mime="text/csv",
+        )
+
 st.caption(
-    "Discrete cash dividends enabled (S₀,eff = S₀ − PV(divs)) for equity options; "
-    "BSM/CRR; smiles & surface; bonds; bootstrapped curve; swaps; and curve-aware Black-76."
+    "Discrete cash dividends; BSM/CRR; smiles & surface; bonds; curve; swaps; futures & Black-76; "
+    "plus one-click **Reports & Export** (PDF/CSV)."
 )
