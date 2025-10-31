@@ -739,7 +739,7 @@ with tab8:
 with tab9:
     st.subheader("Reports & Export")
     # Use inputs from Tab 1 if available, else defaults via helper
-    base_opts = st.session_state.get("opt_inputs_tab1") and render_options_inputs("opt_inputs_tab1") or render_options_inputs("opt_inputs_reports")
+    base_opts = render_options_inputs("opt_inputs_reports")
 
     # Build metrics with current inputs
     oi = OptionInput(S0=base_opts["S_for_options"], K=base_opts["K"], r=base_opts["r"], sigma=base_opts["sigma"], T=base_opts["T"], q=base_opts["q"])
