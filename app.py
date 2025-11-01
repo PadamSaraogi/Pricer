@@ -481,12 +481,14 @@ with tab4:
 # ===== TAB 5: Bonds (numeric & dates) =====
 with tab5:
     st.subheader("Bond Pricer — Price, YTM, Duration & Convexity")
+
     mode_bond_input = st.radio("Input mode", ["Numeric T", "Dates"], horizontal=True)
 
     bc1, bc2, bc3 = st.columns(3)
     face = bc1.number_input("Face/Redemption", min_value=1.0, value=100.0, step=1.0)
     coupon_pct = bc2.number_input("Coupon rate (% p.a.)", value=5.00, step=0.25, format="%.2f") / 100.0
-    freq = int(bc3.selectbox("Payments per year", options=[1, 2, 4], index=1))
+    # ✅ Added Monthly (12) frequency support
+    freq = int(bc3.selectbox("Payments per year", options=[1, 2, 4, 12], index=1))
 
     if mode_bond_input == "Numeric T":
         bc4, bc5 = st.columns(2)
@@ -494,14 +496,19 @@ with tab5:
         ytm_pct = bc5.number_input("Yield to maturity (% p.a.)", value=6.00, step=0.10, format="%.2f") / 100.0
 
         mode_bond = st.radio("Mode", ["Inputs → Price", "Price → YTM"], horizontal=True)
+
         if mode_bond == "Inputs → Price":
             P = price_bond(face, coupon_pct, ytm_pct, T_years, freq)
             mac = macaulay_duration(face, coupon_pct, ytm_pct, T_years, freq)
             mod = modified_duration(face, coupon_pct, ytm_pct, T_years, freq)
             conv = convexity_numeric(face, coupon_pct, ytm_pct, T_years, freq)
+
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Price", f"{P:,.4f}"); c2.metric("Macaulay Dur (yrs)", f"{mac:,.4f}")
-            c3.metric("Modified Dur (yrs)", f"{mod:,.4f}"); c4.metric("Convexity", f"{conv:,.4f}")
+            c1.metric("Price", f"{P:,.4f}")
+            c2.metric("Macaulay Dur (yrs)", f"{mac:,.4f}")
+            c3.metric("Modified Dur (yrs)", f"{mod:,.4f}")
+            c4.metric("Convexity", f"{conv:,.4f}")
+
         else:
             target_price = st.number_input("Target clean price", min_value=0.01, value=100.00, step=0.25)
             ytm_solved = ytm_from_price(target_price, face, coupon_pct, T_years, freq)
@@ -511,16 +518,28 @@ with tab5:
                 mac = macaulay_duration(face, coupon_pct, ytm_solved, T_years, freq)
                 mod = modified_duration(face, coupon_pct, ytm_solved, T_years, freq)
                 conv = convexity_numeric(face, coupon_pct, ytm_solved, T_years, freq)
+
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Solved YTM", f"{ytm_solved*100:.4f}%"); c2.metric("Macaulay Dur (yrs)", f"{mac:,.4f}")
-                c3.metric("Modified Dur (yrs)", f"{mod:,.4f}"); c4.metric("Convexity", f"{conv:,.4f}")
+                c1.metric("Solved YTM", f"{ytm_solved*100:.4f}%")
+                c2.metric("Macaulay Dur (yrs)", f"{mac:,.4f}")
+                c3.metric("Modified Dur (yrs)", f"{mod:,.4f}")
+                c4.metric("Convexity", f"{conv:,.4f}")
 
     else:
         colD1, colD2, colD3 = st.columns(3)
         val_d_str = colD1.text_input("Settlement / Valuation date (YYYY-MM-DD)", value=str(date.today()))
-        mat_d_str = colD2.text_input("Maturity date (YYYY-MM-DD)", value=str(date.today().replace(year=date.today().year + 5)))
-        dc_bond: DayCount = colD3.selectbox("Day-count", ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"], index=0)
-        biz: BizConv = st.selectbox("Business-day convention", ["Following", "Modified Following", "Preceding"], index=0)
+        mat_d_str = colD2.text_input(
+            "Maturity date (YYYY-MM-DD)",
+            value=str(date.today().replace(year=date.today().year + 5))
+        )
+        dc_bond: DayCount = colD3.selectbox(
+            "Day-count", ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"], index=0
+        )
+        biz: BizConv = st.selectbox(
+            "Business-day convention",
+            ["Following", "Modified Following", "Preceding"],
+            index=0,
+        )
 
         try:
             settle_d = parse_date(val_d_str)
@@ -536,8 +555,12 @@ with tab5:
             P = price_bond_dates(face, coupon_pct, ytm_pct_d, settle_d, mat_d, freq, dc_bond, biz)
             mac = macaulay_duration_dates(face, coupon_pct, ytm_pct_d, settle_d, mat_d, freq, dc_bond, biz)
             mod = modified_duration_dates(face, coupon_pct, ytm_pct_d, settle_d, mat_d, freq, dc_bond, biz)
+
             c1, c2, c3 = st.columns(3)
-            c1.metric("Price", f"{P:,.4f}"); c2.metric("Macaulay Dur (yrs)", f"{mac:,.4f}"); c3.metric("Modified Dur (yrs)", f"{mod:,.4f}")
+            c1.metric("Price", f"{P:,.4f}")
+            c2.metric("Macaulay Dur (yrs)", f"{mac:,.4f}")
+            c3.metric("Modified Dur (yrs)", f"{mod:,.4f}")
+
         else:
             target_price = st.number_input("Target clean price (dates)", min_value=0.01, value=100.00, step=0.25)
             ytm_solved = ytm_from_price_dates(target_price, face, coupon_pct, settle_d, mat_d, freq, dc_bond, biz)
@@ -546,8 +569,12 @@ with tab5:
             else:
                 mac = macaulay_duration_dates(face, coupon_pct, ytm_solved, settle_d, mat_d, freq, dc_bond, biz)
                 mod = modified_duration_dates(face, coupon_pct, ytm_solved, settle_d, mat_d, freq, dc_bond, biz)
+
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Solved YTM", f"{ytm_solved*100:.4f}%"); c2.metric("Macaulay Dur (yrs)", f"{mac:,.4f}"); c3.metric("Modified Dur (yrs)", f"{mod:,.4f}")
+                c1.metric("Solved YTM", f"{ytm_solved*100:.4f}%")
+                c2.metric("Macaulay Dur (yrs)", f"{mac:,.4f}")
+                c3.metric("Modified Dur (yrs)", f"{mod:,.4f}")
+
 
 # ===== TAB 6: Yield Curve =====
 with tab6:
