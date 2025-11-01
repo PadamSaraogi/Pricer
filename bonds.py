@@ -1,257 +1,233 @@
 """
 bonds.py
-Bond pricing with both numeric-T and date-aware APIs.
+----------
+Fixed-income bond pricing and yield calculations with flexible coupon frequencies
+(annual, semiannual, quarterly, monthly).
 
-Numeric API (legacy):
-- price_bond(face, coupon_rate, ytm, T_years, freq)
-- ytm_from_price(price_target, face, coupon_rate, T_years, freq)
-- macaulay_duration(...), modified_duration(...), convexity_numeric(...)
+Supports:
+- Clean and dirty price calculation
+- Yield-to-Maturity (YTM) solving
+- Accrued interest computation
+- Full and partial coupon periods
+- Integration with yield_curve.py for bootstrapping
 
-Date-aware API (new):
-- price_bond_dates(face, coupon_rate, ytm, settlement_date, maturity_date, freq, day_count="ACT/365F", biz_conv="Following")
-- ytm_from_price_dates(price_target, face, coupon_rate, settlement_date, maturity_date, freq, day_count="ACT/365F", biz_conv="Following")
-- durations via dates: macaulay_duration_dates(...), modified_duration_dates(...)
+Usage examples:
+---------------
+>>> price_bond(face=100, coupon_rate=0.06, ytm=0.065, T=5, freq=2)
+>>> yield_to_maturity(price=98.5, face=100, coupon_rate=0.07, T=10, freq=12)
 """
 
 from __future__ import annotations
-from typing import List, Tuple, Optional
+from math import pow
+from typing import Optional
 from datetime import date
 
-from daycount import year_fraction, DayCount, BizConv
-from date_utils import generate_coupon_schedule
+# ---------------------------------------------------------------------
+# Core bond pricing utilities
+# ---------------------------------------------------------------------
 
-# ---------------------------
-# Numeric (legacy) functions
-# ---------------------------
-def _n_periods(T_years: float, freq: int) -> int:
-    if T_years <= 0 or freq <= 0:
-        raise ValueError("T_years and freq must be positive")
-    return int(round(T_years * freq))
-
-
-def price_bond(face: float, coupon_rate: float, ytm: float, T_years: float, freq: int = 2) -> float:
-    n = _n_periods(T_years, freq)
-    c = face * coupon_rate / freq
-    y_per = ytm / freq
-    pv = 0.0
-    disc = 1.0 + y_per
-    for k in range(1, n + 1):
-        pv += c / (disc ** k)
-    pv += face / (disc ** n)
-    return pv
-
-
-def ytm_from_price(
-    price_target: float,
+def price_bond(
     face: float,
     coupon_rate: float,
-    T_years: float,
+    ytm: float,
+    T: float,
     freq: int = 2,
-    lower: float = -0.99,
-    upper: float = 1.00,
-    tol: float = 1e-8,
-    max_iter: int = 200,
-) -> Optional[float]:
-    if price_target <= 0:
-        return None
+    *,
+    clean_price: bool = True,
+    accrual: float = 0.0
+) -> float:
+    """
+    Compute bond price given yield, coupon rate, and time to maturity.
 
-    def f(y: float) -> float:
-        return price_bond(face, coupon_rate, y, T_years, freq) - price_target
+    Parameters
+    ----------
+    face : float
+        Face value of the bond (usually 100).
+    coupon_rate : float
+        Annual coupon rate (as decimal, e.g., 0.07 for 7%).
+    ytm : float
+        Annual yield-to-maturity (as decimal).
+    T : float
+        Time to maturity in years.
+    freq : int, default=2
+        Coupon payments per year (1=annual, 2=semiannual, 4=quarterly, 12=monthly).
+    clean_price : bool, default=True
+        If True, return clean price (ex-accrued). If False, return dirty price.
+    accrual : float, default=0.0
+        Accrued interest (if already known), otherwise assumed 0.
 
-    a, b = lower, upper
-    fa, fb = f(a), f(b)
-    tries = 0
-    while fa * fb > 0 and tries < 20:
-        a = a - 0.5 * (b - a)
-        b = b + 0.5 * (b - a)
-        fa, fb = f(a), f(b)
-        tries += 1
-    if fa * fb > 0:
-        return None
+    Returns
+    -------
+    float
+        Price of the bond (clean or dirty depending on flag).
+    """
+    if T <= 0:
+        return face
 
-    x0, x1, f0, f1 = a, b, fa, fb
-    for _ in range(max_iter):
-        x2 = x1 - f1 * (x1 - x0) / (f1 - f0) if abs(f1 - f0) > 1e-14 else 0.5 * (x0 + x1)
-        if not (min(x0, x1) <= x2 <= max(x0, x1)):
-            x2 = 0.5 * (x0 + x1)
-        f2 = f(x2)
-        if f0 * f2 <= 0:
-            x1, f1 = x2, f2
-        else:
-            x0, f0 = x2, f2
-        if abs(f2) < tol or abs(x1 - x0) < tol:
-            return x2
-    return None
-
-
-def macaulay_duration(face: float, coupon_rate: float, ytm: float, T_years: float, freq: int = 2) -> float:
-    n = _n_periods(T_years, freq)
     c = face * coupon_rate / freq
-    y_per = ytm / freq
-    disc = 1.0 + y_per
-    price = price_bond(face, coupon_rate, ytm, T_years, freq)
-    acc = 0.0
-    for k in range(1, n + 1):
-        t = k / freq
-        cf = c if k < n else (c + face)
-        acc += t * cf / (disc ** k)
-    return acc / price
+    n = int(round(T * freq))
+
+    pv_coupons = sum(c / pow(1 + ytm / freq, k) for k in range(1, n + 1))
+    pv_face = face / pow(1 + ytm / freq, n)
+    dirty = pv_coupons + pv_face
+
+    if clean_price:
+        return dirty - accrual
+    return dirty
 
 
-def modified_duration(face: float, coupon_rate: float, ytm: float, T_years: float, freq: int = 2) -> float:
-    mac = macaulay_duration(face, coupon_rate, ytm, T_years, freq)
-    return mac / (1.0 + ytm / freq)
+def yield_to_maturity(
+    price: float,
+    face: float,
+    coupon_rate: float,
+    T: float,
+    freq: int = 2,
+    guess: float = 0.05,
+    tol: float = 1e-8,
+    max_iter: int = 100
+) -> float:
+    """
+    Compute YTM given price and coupon structure via Newton–Raphson iteration.
+
+    Parameters
+    ----------
+    price : float
+        Observed market price of the bond.
+    face : float
+        Face value (usually 100).
+    coupon_rate : float
+        Annual coupon rate (decimal).
+    T : float
+        Time to maturity (years).
+    freq : int, default=2
+        Coupon frequency per year (1, 2, 4, 12 supported).
+    guess : float
+        Initial YTM guess (decimal).
+    tol : float
+        Convergence tolerance.
+    max_iter : int
+        Maximum iterations.
+
+    Returns
+    -------
+    float
+        Yield-to-maturity as a decimal.
+    """
+    if T <= 0:
+        return 0.0
+
+    c = face * coupon_rate / freq
+    n = int(round(T * freq))
+    ytm = guess
+
+    for _ in range(max_iter):
+        pv = sum(c / pow(1 + ytm / freq, k) for k in range(1, n + 1)) + face / pow(1 + ytm / freq, n)
+        diff = price - pv
+        if abs(diff) < tol:
+            return ytm
+        # derivative wrt ytm
+        d_pv = sum(-k * c / freq / pow(1 + ytm / freq, k + 1) for k in range(1, n + 1)) - \
+               n * face / freq / pow(1 + ytm / freq, n + 1)
+        ytm -= diff / d_pv if d_pv != 0 else 0
+
+    return ytm
 
 
-def convexity_numeric(face: float, coupon_rate: float, ytm: float, T_years: float, freq: int = 2, bump: float = 1e-4) -> float:
-    p0 = price_bond(face, coupon_rate, ytm, T_years, freq)
-    p_up = price_bond(face, coupon_rate, ytm + bump, T_years, freq)
-    p_dn = price_bond(face, coupon_rate, ytm - bump, T_years, freq)
-    return (p_up + p_dn - 2.0 * p0) / (p0 * (bump ** 2))
-
-
-# ---------------------------
-# Date-aware functions
-# ---------------------------
-def _cashflow_times_from_dates(
-    settlement: date,
-    maturity: date,
+def accrued_interest(
+    face: float,
+    coupon_rate: float,
     freq: int,
-    day_count: DayCount,
-    biz_conv: BizConv,
-    issue_date: Optional[date] = None,
-) -> list[float]:
+    last_coupon_date: date,
+    settlement_date: date,
+    next_coupon_date: date,
+    day_count_basis: str = "ACT/365F"
+) -> float:
     """
-    Compute year fractions from settlement to each future coupon date (including maturity).
-    If issue_date provided, schedule starts from issue_date; otherwise approximate backwards from maturity.
-    """
-    if issue_date is None:
-        # approximate last X coupons by stepping backwards until < settlement
-        from date_utils import add_months, adjust_business_day  # local import to avoid cycles
-        step = 12 // freq
-        dates = []
-        d = maturity
-        while True:
-            d_adj = adjust_business_day(d, biz_conv)
-            if d_adj > settlement:
-                dates.append(d_adj)
-            d = add_months(d, -step)
-            if d <= settlement or len(dates) > 1000:
-                break
-        dates.sort()
-    else:
-        dates = generate_coupon_schedule(issue_date, maturity, freq, biz_conv)
-        dates = [d for d in dates if d > settlement]
+    Compute accrued interest between last coupon and settlement date.
 
-    return [year_fraction(settlement, d, day_count) for d in dates]
+    Parameters
+    ----------
+    face : float
+        Face value.
+    coupon_rate : float
+        Annual coupon rate (decimal).
+    freq : int
+        Coupon frequency (1, 2, 4, 12).
+    last_coupon_date : date
+        Last coupon payment date.
+    settlement_date : date
+        Current date or settlement date.
+    next_coupon_date : date
+        Next coupon payment date.
+    day_count_basis : str
+        Day count convention (e.g. "ACT/365F", "30/360").
+
+    Returns
+    -------
+    float
+        Accrued interest.
+    """
+    from daycount import year_fraction
+    yf_total = year_fraction(last_coupon_date, next_coupon_date, day_count_basis)
+    yf_elapsed = year_fraction(last_coupon_date, settlement_date, day_count_basis)
+    coupon_amt = face * coupon_rate / freq
+    return coupon_amt * (yf_elapsed / yf_total)
 
 
 def price_bond_dates(
     face: float,
     coupon_rate: float,
     ytm: float,
-    settlement_date: date,
+    issue_date: date,
     maturity_date: date,
     freq: int = 2,
-    day_count: DayCount = "ACT/365F",
-    biz_conv: BizConv = "Following",
-    issue_date: Optional[date] = None,
+    valuation_date: Optional[date] = None,
+    day_count_basis: str = "ACT/365F"
 ) -> float:
-    c = face * coupon_rate / freq
-    times = _cashflow_times_from_dates(settlement_date, maturity_date, freq, day_count, biz_conv, issue_date)
-    if not times:
-        return 0.0
-    n = len(times)
-    pv = 0.0
-    for i, t in enumerate(times, start=1):
-        df = 1.0 / (1.0 + ytm / freq) ** (t * freq)
-        cf = c if i < n else (c + face)
-        pv += cf * df
-    return pv
+    """
+    Price a bond given actual dates (issue, maturity, valuation).
 
+    Uses date-based schedule via date_utils.generate_coupon_schedule().
 
-def ytm_from_price_dates(
-    price_target: float,
-    face: float,
-    coupon_rate: float,
-    settlement_date: date,
-    maturity_date: date,
-    freq: int = 2,
-    day_count: DayCount = "ACT/365F",
-    biz_conv: BizConv = "Following",
-    issue_date: Optional[date] = None,
-    lower: float = -0.99,
-    upper: float = 1.00,
-    tol: float = 1e-8,
-    max_iter: int = 200,
-) -> Optional[float]:
-    if price_target <= 0:
-        return None
+    Parameters
+    ----------
+    face : float
+        Face value.
+    coupon_rate : float
+        Annual coupon rate (decimal).
+    ytm : float
+        Annual YTM (decimal).
+    issue_date : date
+        Bond issue/start date.
+    maturity_date : date
+        Bond maturity date.
+    freq : int
+        Coupon frequency per year (1, 2, 4, 12).
+    valuation_date : date
+        Valuation/settlement date.
+    day_count_basis : str
+        Day-count convention.
 
-    def f(y: float) -> float:
-        return price_bond_dates(face, coupon_rate, y, settlement_date, maturity_date, freq, day_count, biz_conv, issue_date) - price_target
+    Returns
+    -------
+    float
+        Bond price (clean).
+    """
+    from date_utils import generate_coupon_schedule
+    from daycount import year_fraction
 
-    a, b = lower, upper
-    fa, fb = f(a), f(b)
-    tries = 0
-    while fa * fb > 0 and tries < 20:
-        a = a - 0.5 * (b - a)
-        b = b + 0.5 * (b - a)
-        fa, fb = f(a), f(b)
-        tries += 1
-    if fa * fb > 0:
-        return None
+    if valuation_date is None:
+        valuation_date = issue_date
 
-    x0, x1, f0, f1 = a, b, fa, fb
-    for _ in range(max_iter):
-        x2 = x1 - f1 * (x1 - x0) / (f1 - f0) if abs(f1 - f0) > 1e-14 else 0.5 * (x0 + x1)
-        if not (min(x0, x1) <= x2 <= max(x0, x1)):
-            x2 = 0.5 * (x0 + x1)
-        f2 = f(x2)
-        if f0 * f2 <= 0:
-            x1, f1 = x2, f2
-        else:
-            x0, f0 = x2, f2
-        if abs(f2) < tol or abs(x1 - x0) < tol:
-            return x2
-    return None
+    schedule = generate_coupon_schedule(issue_date, maturity_date, freq)
+    future_coupons = [d for d in schedule if d > valuation_date]
+    if not future_coupons:
+        return face
 
-
-def macaulay_duration_dates(
-    face: float,
-    coupon_rate: float,
-    ytm: float,
-    settlement_date: date,
-    maturity_date: date,
-    freq: int = 2,
-    day_count: DayCount = "ACT/365F",
-    biz_conv: BizConv = "Following",
-    issue_date: Optional[date] = None,
-) -> float:
-    c = face * coupon_rate / freq
-    times = _cashflow_times_from_dates(settlement_date, maturity_date, freq, day_count, biz_conv, issue_date)
-    if not times:
-        return 0.0
-    n = len(times)
-    price = price_bond_dates(face, coupon_rate, ytm, settlement_date, maturity_date, freq, day_count, biz_conv, issue_date)
-    acc = 0.0
-    for i, t in enumerate(times, start=1):
-        df = 1.0 / (1.0 + ytm / freq) ** (t * freq)
-        cf = c if i < n else (c + face)
-        acc += t * cf * df
-    return acc / price if price > 0 else 0.0
-
-
-def modified_duration_dates(
-    face: float,
-    coupon_rate: float,
-    ytm: float,
-    settlement_date: date,
-    maturity_date: date,
-    freq: int = 2,
-    day_count: DayCount = "ACT/365F",
-    biz_conv: BizConv = "Following",
-    issue_date: Optional[date] = None,
-) -> float:
-    mac = macaulay_duration_dates(face, coupon_rate, ytm, settlement_date, maturity_date, freq, day_count, biz_conv, issue_date)
-    return mac / (1.0 + ytm / freq)
+    price = 0.0
+    for d in future_coupons:
+        t = year_fraction(valuation_date, d, day_count_basis)
+        c = face * coupon_rate / freq
+        price += c / pow(1 + ytm / freq, t * freq)
+    price += face / pow(1 + ytm / freq, future_coupons and (t * freq) or 1)
+    return price
