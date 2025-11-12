@@ -15,7 +15,7 @@ from bs_core import (
 )
 from american_binomial import crr_price_european, crr_price_american
 from vol_surface import compute_chain_iv, prepare_surface_arrays
-from bonds import price_bond, ytm_from_price, macaulay_duration, modified_duration, convexity_numeric, price_bond_dates, macaulay_duration_dates, modified_duration_dates
+from bonds import price_bond, ytm_from_price, macaulay_duration, modified_duration, convexity_numeric, price_bond_dates, modified_duration_dates
 from yield_curve import YieldCurve
 from swaps import par_swap_rate, swap_pv, dv01
 from daycount import year_fraction, DayCount, BizConv
