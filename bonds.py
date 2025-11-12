@@ -22,9 +22,12 @@ from math import pow
 from typing import Optional
 from datetime import date
 
-# ---------------------------------------------------------------------
+from daycount import adjust_business_day, BizConv
+
+
+# -------------------------------------------------------------------------
 # Core bond pricing utilities
-# ---------------------------------------------------------------------
+# -------------------------------------------------------------------------
 
 def price_bond(
     face: float,
@@ -76,61 +79,67 @@ def price_bond(
     return dirty
 
 
-def yield_to_maturity(
+def ytm_from_price(
     price: float,
     face: float,
     coupon_rate: float,
     T: float,
     freq: int = 2,
     guess: float = 0.05,
-    tol: float = 1e-8,
+    tol: float = 1e-6,
     max_iter: int = 100
-) -> float:
+) -> Optional[float]:
     """
-    Compute YTM given price and coupon structure via Newton–Raphson iteration.
+    Calculate Yield to Maturity (YTM) given bond price, coupon rate, and time to maturity.
+
+    Uses Newton-Raphson iteration to solve for YTM.
 
     Parameters
     ----------
     price : float
-        Observed market price of the bond.
+        Market price of the bond.
     face : float
-        Face value (usually 100).
+        Face value of the bond (typically 100).
     coupon_rate : float
-        Annual coupon rate (decimal).
+        Annual coupon rate as a decimal (e.g., 0.06 for 6%).
     T : float
-        Time to maturity (years).
+        Time to maturity in years.
     freq : int, default=2
-        Coupon frequency per year (1, 2, 4, 12 supported).
+        Number of coupon payments per year (1 = annual, 2 = semiannual, 4 = quarterly).
     guess : float
-        Initial YTM guess (decimal).
+        Initial guess for the YTM (default 5%).
     tol : float
-        Convergence tolerance.
+        Convergence tolerance (default 1e-6).
     max_iter : int
-        Maximum iterations.
+        Maximum number of iterations for Newton-Raphson method.
 
     Returns
     -------
-    float
-        Yield-to-maturity as a decimal.
+    float or None
+        The calculated YTM (as a decimal), or None if it could not be solved.
     """
-    if T <= 0:
-        return 0.0
-
     c = face * coupon_rate / freq
     n = int(round(T * freq))
     ytm = guess
 
     for _ in range(max_iter):
-        pv = sum(c / pow(1 + ytm / freq, k) for k in range(1, n + 1)) + face / pow(1 + ytm / freq, n)
-        diff = price - pv
+        # Price formula for the bond
+        bond_price = sum(c / pow(1 + ytm / freq, k) for k in range(1, n + 1)) + face / pow(1 + ytm / freq, n)
+        diff = price - bond_price
+
         if abs(diff) < tol:
             return ytm
-        # derivative wrt ytm
-        d_pv = sum(-k * c / freq / pow(1 + ytm / freq, k + 1) for k in range(1, n + 1)) - \
-               n * face / freq / pow(1 + ytm / freq, n + 1)
-        ytm -= diff / d_pv if d_pv != 0 else 0
 
-    return ytm
+        # Derivative of bond price with respect to YTM (using finite difference method)
+        d_price = sum(-k * c / freq / pow(1 + ytm / freq, k + 1) for k in range(1, n + 1)) - \
+                  n * face / freq / pow(1 + ytm / freq, n + 1)
+
+        # Update YTM using Newton's method
+        if d_price == 0:
+            break  # Prevent division by zero
+        ytm -= diff / d_price
+
+    return None  # If it couldn't converge
 
 
 def accrued_interest(
