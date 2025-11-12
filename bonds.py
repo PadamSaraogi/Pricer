@@ -183,6 +183,121 @@ def accrued_interest(
     return coupon_amt * (yf_elapsed / yf_total)
 
 
+def macaulay_duration(
+    face: float,
+    coupon_rate: float,
+    ytm: float,
+    T: float,
+    freq: int = 2
+) -> float:
+    """
+    Calculate the Macaulay duration of a bond given the price, yield, coupon rate, and time to maturity.
+
+    Parameters
+    ----------
+    face : float
+        Face value of the bond (typically 100).
+    coupon_rate : float
+        Annual coupon rate as a decimal (e.g., 0.06 for 6%).
+    ytm : float
+        Yield to maturity as a decimal (e.g., 0.06 for 6%).
+    T : float
+        Time to maturity in years.
+    freq : int, default=2
+        Number of coupon payments per year (1 = annual, 2 = semiannual, 4 = quarterly).
+
+    Returns
+    -------
+    float
+        The Macaulay duration of the bond in years.
+    """
+    c = face * coupon_rate / freq  # coupon payment per period
+    n = int(round(T * freq))  # total number of coupon periods
+    t = [k / freq for k in range(1, n + 1)]  # time periods in years
+    discount_factors = [1 / (1 + ytm / freq) ** k for k in range(1, n + 1)]  # DF for each period
+
+    # Calculate the weighted average time to receive each cash flow
+    weighted_sum = sum(c * t[i] * discount_factors[i] for i in range(n)) + face * t[-1] * discount_factors[-1]
+    price = sum(c * discount_factors[i] for i in range(n)) + face * discount_factors[-1]
+    
+    return weighted_sum / price
+
+
+def modified_duration(
+    face: float,
+    coupon_rate: float,
+    ytm: float,
+    T: float,
+    freq: int = 2
+) -> float:
+    """
+    Calculate the modified duration of a bond given the Macaulay duration and yield.
+
+    Parameters
+    ----------
+    face : float
+        Face value of the bond (typically 100).
+    coupon_rate : float
+        Annual coupon rate as a decimal (e.g., 0.06 for 6%).
+    ytm : float
+        Yield to maturity as a decimal (e.g., 0.06 for 6%).
+    T : float
+        Time to maturity in years.
+    freq : int, default=2
+        Number of coupon payments per year (1 = annual, 2 = semiannual, 4 = quarterly).
+
+    Returns
+    -------
+    float
+        The modified duration of the bond in years.
+    """
+    macaulay_dur = macaulay_duration(face, coupon_rate, ytm, T, freq)
+    return macaulay_dur / (1 + ytm / freq)
+
+
+def convexity_numeric(
+    face: float,
+    coupon_rate: float,
+    ytm: float,
+    T: float,
+    freq: int = 2
+) -> float:
+    """
+    Calculate the bond convexity using numerical methods (second derivative of price).
+
+    Parameters
+    ----------
+    face : float
+        Face value of the bond (typically 100).
+    coupon_rate : float
+        Annual coupon rate as a decimal (e.g., 0.06 for 6%).
+    ytm : float
+        Yield to maturity as a decimal (e.g., 0.06 for 6%).
+    T : float
+        Time to maturity in years.
+    freq : int, default=2
+        Number of coupon payments per year (1 = annual, 2 = semiannual, 4 = quarterly).
+
+    Returns
+    -------
+    float
+        The bond convexity (in years^2).
+    """
+    c = face * coupon_rate / freq
+    n = int(round(T * freq))
+    discount_factors = [1 / (1 + ytm / freq) ** k for k in range(1, n + 1)]
+
+    # First derivative (duration)
+    first_derivative = sum(c * (k / freq) * discount_factors[k-1] for k in range(1, n + 1)) + face * (n / freq) * discount_factors[-1]
+
+    # Second derivative (convexity)
+    second_derivative = sum(c * (k / freq) ** 2 * discount_factors[k-1] for k in range(1, n + 1)) + face * (n / freq) ** 2 * discount_factors[-1]
+
+    # Convexity is the second derivative of price divided by price
+    price = sum(c * discount_factors[k-1] for k in range(1, n + 1)) + face * discount_factors[-1]
+    return second_derivative / price
+
+
 def price_bond_dates(
     face: float,
     coupon_rate: float,
