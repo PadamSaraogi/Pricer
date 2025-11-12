@@ -79,7 +79,7 @@ def price_bond(
     return dirty
 
 
-def ytm_from_price(
+def ytm_from_price_dates(
     price: float,
     face: float,
     coupon_rate: float,
