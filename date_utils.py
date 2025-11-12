@@ -1,3 +1,4 @@
+from datetime import date  # Ensure 'date' is imported here
 def generate_coupon_schedule(
     issue_date: date,
     maturity_date: date,
