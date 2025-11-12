@@ -355,4 +355,3 @@ def price_bond_dates(
         price += c / pow(1 + ytm / freq, t * freq)
     price += face / pow(1 + ytm / freq, future_coupons and (t * freq) or 1)
     return price
-
