@@ -1,16 +1,20 @@
 """
 bonds.py
-Bond pricing with both numeric-T and date-aware APIs.
+----------
+Fixed-income bond pricing and yield calculations with flexible coupon frequencies
+(annual, semiannual, quarterly, monthly).
 
-Numeric API (legacy):
-- price_bond(face, coupon_rate, ytm, T_years, freq)
-- ytm_from_price(price_target, face, coupon_rate, T_years, freq)
-- macaulay_duration(...), modified_duration(...), convexity_numeric(...)
+Supports:
+- Clean and dirty price calculation
+- Yield-to-Maturity (YTM) solving
+- Accrued interest computation
+- Full and partial coupon periods
+- Integration with yield_curve.py for bootstrapping
 
-Date-aware API (new):
-- price_bond_dates(face, coupon_rate, ytm, settlement_date, maturity_date, freq, day_count="ACT/365F", biz_conv="Following")
-- ytm_from_price_dates(price_target, face, coupon_rate, settlement_date, maturity_date, freq, day_count="ACT/365F", biz_conv="Following")
-- durations via dates: macaulay_duration_dates(...), modified_duration_dates(...)
+Usage examples:
+---------------
+>>> price_bond(face=100, coupon_rate=0.06, ytm=0.065, T=5, freq=2)
+>>> yield_to_maturity(price=98.5, face=100, coupon_rate=0.07, T=10, freq=12)
 """
 
 from __future__ import annotations
@@ -20,16 +24,40 @@ from datetime import date
 from daycount import year_fraction, DayCount, BizConv
 from date_utils import generate_coupon_schedule
 
+
 # ---------------------------
 # Numeric (legacy) functions
 # ---------------------------
+
 def _n_periods(T_years: float, freq: int) -> int:
+    """Calculate the number of periods based on years to maturity (T) and coupon frequency (freq)."""
     if T_years <= 0 or freq <= 0:
         raise ValueError("T_years and freq must be positive")
     return int(round(T_years * freq))
 
 
 def price_bond(face: float, coupon_rate: float, ytm: float, T_years: float, freq: int = 2) -> float:
+    """
+    Compute bond price given yield, coupon rate, and time to maturity (numeric T).
+
+    Parameters
+    ----------
+    face : float
+        Face value of the bond (typically 100).
+    coupon_rate : float
+        Annual coupon rate as a decimal (e.g., 0.07 for 7%).
+    ytm : float
+        Annual yield-to-maturity as a decimal (e.g., 0.065 for 6.5%).
+    T_years : float
+        Time to maturity in years.
+    freq : int, default=2
+        Coupon payments per year (1 = annual, 2 = semiannual, 4 = quarterly, 12 = monthly).
+
+    Returns
+    -------
+    float
+        Price of the bond (clean or dirty depending on flag).
+    """
     n = _n_periods(T_years, freq)
     c = face * coupon_rate / freq
     y_per = ytm / freq
@@ -52,6 +80,35 @@ def ytm_from_price(
     tol: float = 1e-8,
     max_iter: int = 200,
 ) -> Optional[float]:
+    """
+    Solve for Yield to Maturity (YTM) given bond price, coupon rate, and time to maturity (numeric T).
+    
+    Parameters
+    ----------
+    price_target : float
+        The market price of the bond.
+    face : float
+        Face value of the bond (typically 100).
+    coupon_rate : float
+        Coupon rate as a decimal.
+    T_years : float
+        Time to maturity in years.
+    freq : int, default=2
+        Number of coupon payments per year (1 = annual, 2 = semiannual, 4 = quarterly).
+    lower : float, default=-0.99
+        Lower bound for YTM search.
+    upper : float, default=1.00
+        Upper bound for YTM search.
+    tol : float, default=1e-8
+        Convergence tolerance.
+    max_iter : int, default=200
+        Maximum number of iterations.
+
+    Returns
+    -------
+    float or None
+        Calculated YTM (decimal) or None if convergence is not achieved.
+    """
     if price_target <= 0:
         return None
 
@@ -85,6 +142,27 @@ def ytm_from_price(
 
 
 def macaulay_duration(face: float, coupon_rate: float, ytm: float, T_years: float, freq: int = 2) -> float:
+    """
+    Calculate the Macaulay duration of a bond given the price, yield, coupon rate, and time to maturity (numeric T).
+
+    Parameters
+    ----------
+    face : float
+        Face value of the bond (typically 100).
+    coupon_rate : float
+        Annual coupon rate as a decimal (e.g., 0.06 for 6%).
+    ytm : float
+        Yield to maturity as a decimal (e.g., 0.06 for 6%).
+    T_years : float
+        Time to maturity in years.
+    freq : int, default=2
+        Number of coupon payments per year (1 = annual, 2 = semiannual, 4 = quarterly).
+
+    Returns
+    -------
+    float
+        The Macaulay duration of the bond in years.
+    """
     n = _n_periods(T_years, freq)
     c = face * coupon_rate / freq
     y_per = ytm / freq
@@ -99,11 +177,53 @@ def macaulay_duration(face: float, coupon_rate: float, ytm: float, T_years: floa
 
 
 def modified_duration(face: float, coupon_rate: float, ytm: float, T_years: float, freq: int = 2) -> float:
+    """
+    Calculate the modified duration of a bond given the Macaulay duration and yield (numeric T).
+
+    Parameters
+    ----------
+    face : float
+        Face value of the bond (typically 100).
+    coupon_rate : float
+        Annual coupon rate as a decimal (e.g., 0.06 for 6%).
+    ytm : float
+        Yield to maturity as a decimal (e.g., 0.06 for 6%).
+    T_years : float
+        Time to maturity in years.
+    freq : int, default=2
+        Number of coupon payments per year (1 = annual, 2 = semiannual, 4 = quarterly).
+
+    Returns
+    -------
+    float
+        The modified duration of the bond in years.
+    """
     mac = macaulay_duration(face, coupon_rate, ytm, T_years, freq)
     return mac / (1.0 + ytm / freq)
 
 
 def convexity_numeric(face: float, coupon_rate: float, ytm: float, T_years: float, freq: int = 2, bump: float = 1e-4) -> float:
+    """
+    Calculate the bond convexity using numerical methods (second derivative of price).
+
+    Parameters
+    ----------
+    face : float
+        Face value of the bond (typically 100).
+    coupon_rate : float
+        Annual coupon rate as a decimal (e.g., 0.06 for 6%).
+    ytm : float
+        Yield to maturity as a decimal (e.g., 0.06 for 6%).
+    T_years : float
+        Time to maturity in years.
+    freq : int, default=2
+        Number of coupon payments per year (1 = annual, 2 = semiannual, 4 = quarterly).
+
+    Returns
+    -------
+    float
+        The bond convexity (in years^2).
+    """
     p0 = price_bond(face, coupon_rate, ytm, T_years, freq)
     p_up = price_bond(face, coupon_rate, ytm + bump, T_years, freq)
     p_dn = price_bond(face, coupon_rate, ytm - bump, T_years, freq)
@@ -113,6 +233,7 @@ def convexity_numeric(face: float, coupon_rate: float, ytm: float, T_years: floa
 # ---------------------------
 # Date-aware functions
 # ---------------------------
+
 def _cashflow_times_from_dates(
     settlement: date,
     maturity: date,
