@@ -15,7 +15,7 @@ from bs_core import (
 )
 from american_binomial import crr_price_european, crr_price_american
 from vol_surface import compute_chain_iv, prepare_surface_arrays
-from bonds import price_bond, ytm_from_price, macaulay_duration, modified_duration, convexity_numeric (
+from bonds import price_bond, ytm_from_price, macaulay_duration, modified_duration, convexity_numeric, price_bond_dates, ytm_from_price_dates, macaulay_duration_dates, modified_duration_dates
     price_bond,
     ytm_from_price,
     macaulay_duration,
