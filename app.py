@@ -62,7 +62,6 @@ st.set_page_config(page_title="Option & Fixed-Income Analytics", page_icon="📊
 st.title("📊 Option & Fixed-Income Analytics Dashboard")
 
 # ========== Shared UI helper for Options inputs (inside tabs) ==========
-# ========== Shared UI helper for Options inputs (inside tabs) ==========
 def render_options_inputs(defaults_key: str = "opt_defaults"):
     """
     Renders the full set of options inputs INSIDE the current tab (no sidebar).
@@ -486,7 +485,8 @@ with tab5:
     bc1, bc2, bc3 = st.columns(3)
     face = bc1.number_input("Face/Redemption", min_value=1.0, value=100.0, step=1.0)
     coupon_pct = bc2.number_input("Coupon rate (% p.a.)", value=5.00, step=0.25, format="%.2f") / 100.0
-    freq = int(bc3.selectbox("Payments per year", options=[1, 2, 4], index=1))
+    # UNIQUE KEY ADDED HERE
+    freq = int(bc3.selectbox("Payments per year", options=[1, 2, 4], index=1, key="bond_freq_numeric"))
 
     if mode_bond_input == "Numeric T":
         bc4, bc5 = st.columns(2)
@@ -519,8 +519,9 @@ with tab5:
         colD1, colD2, colD3 = st.columns(3)
         val_d_str = colD1.text_input("Settlement / Valuation date (YYYY-MM-DD)", value=str(date.today()))
         mat_d_str = colD2.text_input("Maturity date (YYYY-MM-DD)", value=str(date.today().replace(year=date.today().year + 5)))
-        dc_bond: DayCount = colD3.selectbox("Day-count", ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"], index=0)
-        biz: BizConv = st.selectbox("Business-day convention", ["Following", "Modified Following", "Preceding"], index=0)
+        # Unique keys for selectboxes with common labels across tabs
+        dc_bond: DayCount = colD3.selectbox("Day-count", ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"], index=0, key="bond_dc_dates")
+        biz: BizConv = st.selectbox("Business-day convention", ["Following", "Modified Following", "Preceding"], index=0, key="bond_bizconv_dates")
 
         try:
             settle_d = parse_date(val_d_str)
@@ -580,7 +581,7 @@ with tab6:
             except Exception as e:
                 st.error(f"Bootstrapping error: {e}")
     else:
-        dc_curve: DayCount = st.selectbox("Day-count for T", ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"], index=0)
+        dc_curve: DayCount = st.selectbox("Day-count for T", ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"], index=0, key="curve_dc_dates")
         val_date_str2 = st.text_input("Valuation date (YYYY-MM-DD)", value=str(date.today()), key="curve_valdate")
         try:
             curve_val_date = parse_date(val_date_str2)
@@ -640,7 +641,8 @@ with tab7:
         colS1, colS2, colS3 = st.columns(3)
         notional = colS1.number_input("Notional", min_value=1_000.0, value=1_000_000.0, step=50_000.0)
         T_swap = colS2.number_input("Maturity T (years)", min_value=0.5, value=5.0, step=0.5)
-        freq = int(colS3.selectbox("Payments per year", options=[1, 2, 4], index=1))
+        # UNIQUE KEY ADDED HERE
+        freq = int(colS3.selectbox("Payments per year", options=[1, 2, 4], index=1, key="swap_freq"))
         s_par = par_swap_rate(curve, T_swap, freq)
         st.metric("Par swap rate", f"{s_par * 100:.4f}%")
         fixed_rate_user = st.number_input("Fixed rate to value (% p.a.)", value=round(s_par * 100, 4), step=0.01, format="%.4f") / 100.0
