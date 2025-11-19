@@ -367,7 +367,7 @@ with tab3:
 
                 df["T_row"] = df[col_T].astype(float) if col_T is not None else opts["T"]
                 if col_ty is not None:
-                    df["otype"] = df[col_ty].astype(str).lower().str.strip().replace({"c": "call", "p": "put"})
+                    df["otype"] = df[col_ty].astype(str).str.lower().str.strip().replace({"c": "call", "p": "put"})
                     df.loc[~df["otype"].isin(["call", "put"]), "otype"] = opts["opt_type"].lower()
                 else:
                     df["otype"] = opts["opt_type"].lower()
