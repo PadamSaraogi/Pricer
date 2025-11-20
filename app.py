@@ -333,6 +333,9 @@ with tab3:
     from datetime import datetime
     from typing import Optional
     
+    import numpy as np
+    import pandas as pd
+    import streamlit as st
     import altair as alt
     
     
@@ -438,162 +441,163 @@ with tab3:
                 low = mid
     
         return mid  # best effort
-    
-        st.subheader("Upload Option Chain CSV")
-    
-        st.markdown(
-            """
-            **Expected CSV columns (exact names):**
-            - `strike`  
-            - `type` (C/P or c/p)  
-            - `price` (market option price)  
-            - `spot`  
-            - `rate` (risk-free, decimal)  
-            - `dividend` (q, decimal)  
-            - `ttm` (time to maturity in years)  
-            - `expiry` (YYYY-MM-DD)
-            """
-        )
-    
-        uploaded = st.file_uploader("Upload CSV", type=["csv"], key="chain_csv")
-    
-        if uploaded is None:
-            st.info("Upload your CSV to see IV smiles and surfaces.")
-        else:
-            # ---- Read + normalise columns ----
-            try:
-                df = pd.read_csv(uploaded)
-            except Exception as e:
-                st.error(f"Could not read CSV: {e}")
-                st.stop()
-    
-            # standardise column names to lower
-            df.columns = [c.strip().lower() for c in df.columns]
-    
-            required_cols = {"strike", "type", "price", "spot", "rate", "dividend", "ttm", "expiry"}
-            missing = required_cols - set(df.columns)
-            if missing:
-                st.error(f"CSV missing required columns: {', '.join(sorted(missing))}")
-                st.stop()
-    
-            # parse expiry to datetime
-            df["expiry"] = pd.to_datetime(df["expiry"], errors="coerce")
-    
-            # clean type column
-            df["type"] = df["type"].astype(str).str.strip().str.upper()
-            df = df[df["type"].isin(["C", "P"])]
-    
-            # numeric types
-            for col in ["strike", "price", "spot", "rate", "dividend", "ttm"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-    
-            df = df.dropna(subset=["strike", "price", "spot", "rate", "dividend", "ttm", "expiry"])
-    
-            if df.empty:
-                st.error("No valid rows after cleaning. Check your CSV.")
-                st.stop()
-    
-            st.write("### Cleaned option chain (all expiries)")
-            st.dataframe(df.head(50), use_container_width=True)
-    
-            # ---- Expiry selection for IV smile ----
-            expiries = sorted(df["expiry"].dropna().unique())
-            if len(expiries) == 0:
-                st.error("No valid expiry dates parsed from 'expiry' column.")
-                st.stop()
-    
-            exp_choice = st.selectbox(
-                "Select expiry for IV smile",
-                options=expiries,
-                format_func=lambda x: x.strftime("%Y-%m-%d"),
-            )
-    
-            df_exp = df[df["expiry"] == exp_choice].copy()
-            st.write(f"### Chain for expiry {exp_choice.strftime('%Y-%m-%d')}")
-            st.dataframe(df_exp, use_container_width=True)
-    
-            # ---- Compute IV for this expiry ----
-            st.write("### Computing IV for selected expiry…")
-            ivs = []
-            for _, row in df_exp.iterrows():
-                iv = implied_vol_bs(
-                    market_price=row["price"],
-                    S=row["spot"],
-                    K=row["strike"],
-                    r=row["rate"],
-                    q=row["dividend"],
-                    T=row["ttm"],
-                    option_type=row["type"],
-                )
-                ivs.append(iv)
-    
-            df_exp["iv"] = ivs
-            df_valid = df_exp.replace([np.inf, -np.inf], np.nan).dropna(subset=["iv"])
-    
-            st.write(f"Valid IV rows for this expiry: **{len(df_valid)} / {len(df_exp)}**")
-            st.dataframe(df_valid, use_container_width=True)
-    
-            # ---- Plot IV smile for this expiry ----
-            if df_valid.empty:
-                st.warning("No valid IVs solved for this expiry. Check price vs intrinsic, ttm, etc.")
-            else:
-                smile_chart = (
-                    alt.Chart(df_valid)
-                    .mark_line(point=True)
-                    .encode(
-                        x=alt.X("strike:Q", title="Strike"),
-                        y=alt.Y("iv:Q", title="Implied Vol (decimal)"),
-                        color=alt.Color("type:N", title="Type (C/P)"),
-                        tooltip=["strike", "type", "price", "iv"],
-                    )
-                    .properties(width=700, height=400, title="IV Smile")
-                )
-                st.altair_chart(smile_chart, use_container_width=True)
-    
-            # ---- IV surface across ALL expiries ----
-            st.write("### IV Surface Data (all expiries)")
-    
-            iv_all = []
-            for _, row in df.iterrows():
-                iv = implied_vol_bs(
-                    market_price=row["price"],
-                    S=row["spot"],
-                    K=row["strike"],
-                    r=row["rate"],
-                    q=row["dividend"],
-                    T=row["ttm"],
-                    option_type=row["type"],
-                )
-                iv_all.append(iv)
-    
-            df["iv"] = iv_all
-            df_surface = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["iv"])
-    
-            st.write(f"Total rows with valid IV: **{len(df_surface)} / {len(df)}**")
-            st.dataframe(df_surface.head(50), use_container_width=True)
-    
-            # Example 2D slice: IV vs TTM by moneyness bucket
-            st.write("#### Example: IV vs TTM at ATM-ish strikes (for quick sanity check)")
-            atm_mask = (df_surface["strike"] >= df_surface["spot"] * 0.98) & (
-                df_surface["strike"] <= df_surface["spot"] * 1.02
-            )
-            df_atm = df_surface[atm_mask].copy()
-            if not df_atm.empty:
-                atm_chart = (
-                    alt.Chart(df_atm)
-                    .mark_point()
-                    .encode(
-                        x=alt.X("ttm:Q", title="TTM (years)"),
-                        y=alt.Y("iv:Q", title="ATM Implied Vol"),
-                        color="type:N",
-                        tooltip=["expiry", "strike", "iv"],
-                    )
-                    .properties(width=700, height=350)
-                )
-                st.altair_chart(atm_chart, use_container_width=True)
-            else:
-                st.info("No near-ATM points found for the surface preview.")
+        
+    st.subheader("Upload Option Chain CSV")
 
+    st.markdown(
+        """
+        **Expected CSV columns (exact names):**
+        - `strike`  
+        - `type` (C/P or c/p)  
+        - `price` (market option price)  
+        - `spot`  
+        - `rate` (risk-free, decimal)  
+        - `dividend` (q, decimal)  
+        - `ttm` (time to maturity in years)  
+        - `expiry` (YYYY-MM-DD)
+        """
+    )
+
+    uploaded = st.file_uploader("Upload CSV", type=["csv"], key="chain_csv")
+
+    if uploaded is None:
+        st.info("Upload your CSV to see IV smiles and surfaces.")
+    else:
+        # ---- Read + normalise columns ----
+        try:
+            df = pd.read_csv(uploaded)
+        except Exception as e:
+            st.error(f"Could not read CSV: {e}")
+            st.stop()
+
+        # standardise column names to lower
+        df.columns = [c.strip().lower() for c in df.columns]
+
+        required_cols = {"strike", "type", "price", "spot", "rate", "dividend", "ttm", "expiry"}
+        missing = required_cols - set(df.columns)
+        if missing:
+            st.error(f"CSV missing required columns: {', '.join(sorted(missing))}")
+            st.stop()
+
+        # parse expiry to datetime
+        df["expiry"] = pd.to_datetime(df["expiry"], errors="coerce")
+
+        # clean type column
+        df["type"] = df["type"].astype(str).str.strip().str.upper()
+        df = df[df["type"].isin(["C", "P"])]
+
+        # numeric types
+        for col in ["strike", "price", "spot", "rate", "dividend", "ttm"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        df = df.dropna(subset=["strike", "price", "spot", "rate", "dividend", "ttm", "expiry"])
+
+        if df.empty:
+            st.error("No valid rows after cleaning. Check your CSV.")
+            st.stop()
+
+        st.write("### Cleaned option chain (all expiries)")
+        st.dataframe(df.head(50), use_container_width=True)
+
+        # ---- Expiry selection for IV smile ----
+        expiries = sorted(df["expiry"].dropna().unique())
+        if len(expiries) == 0:
+            st.error("No valid expiry dates parsed from 'expiry' column.")
+            st.stop()
+
+        exp_choice = st.selectbox(
+            "Select expiry for IV smile",
+            options=expiries,
+            format_func=lambda x: x.strftime("%Y-%m-%d"),
+        )
+
+        df_exp = df[df["expiry"] == exp_choice].copy()
+        st.write(f"### Chain for expiry {exp_choice.strftime('%Y-%m-%d')}")
+        st.dataframe(df_exp, use_container_width=True)
+
+        # ---- Compute IV for this expiry ----
+        st.write("### Computing IV for selected expiry…")
+        ivs = []
+        for _, row in df_exp.iterrows():
+            iv = implied_vol_bs(
+                market_price=row["price"],
+                S=row["spot"],
+                K=row["strike"],
+                r=row["rate"],
+                q=row["dividend"],
+                T=row["ttm"],
+                option_type=row["type"],
+            )
+            ivs.append(iv)
+
+        df_exp["iv"] = ivs
+        df_valid = df_exp.replace([np.inf, -np.inf], np.nan).dropna(subset=["iv"])
+
+        st.write(f"Valid IV rows for this expiry: **{len(df_valid)} / {len(df_exp)}**")
+        st.dataframe(df_valid, use_container_width=True)
+
+        # ---- Plot IV smile for this expiry ----
+        if df_valid.empty:
+            st.warning("No valid IVs solved for this expiry. Check price vs intrinsic, ttm, etc.")
+        else:
+            smile_chart = (
+                alt.Chart(df_valid)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("strike:Q", title="Strike"),
+                    y=alt.Y("iv:Q", title="Implied Vol (decimal)"),
+                    color=alt.Color("type:N", title="Type (C/P)"),
+                    tooltip=["strike", "type", "price", "iv"],
+                )
+                .properties(width=700, height=400, title="IV Smile")
+            )
+            st.altair_chart(smile_chart, use_container_width=True)
+
+        # ---- IV surface across ALL expiries ----
+        st.write("### IV Surface Data (all expiries)")
+
+        iv_all = []
+        for _, row in df.iterrows():
+            iv = implied_vol_bs(
+                market_price=row["price"],
+                S=row["spot"],
+                K=row["strike"],
+                r=row["rate"],
+                q=row["dividend"],
+                T=row["ttm"],
+                option_type=row["type"],
+            )
+            iv_all.append(iv)
+
+        df["iv"] = iv_all
+        df_surface = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["iv"])
+
+        st.write(f"Total rows with valid IV: **{len(df_surface)} / {len(df)}**")
+        st.dataframe(df_surface.head(50), use_container_width=True)
+
+        # Example 2D slice: IV vs TTM by moneyness bucket
+        st.write("#### Example: IV vs TTM at ATM-ish strikes (for quick sanity check)")
+        atm_mask = (df_surface["strike"] >= df_surface["spot"] * 0.98) & (
+            df_surface["strike"] <= df_surface["spot"] * 1.02
+        )
+        df_atm = df_surface[atm_mask].copy()
+        if not df_atm.empty:
+            atm_chart = (
+                alt.Chart(df_atm)
+                .mark_point()
+                .encode(
+                    x=alt.X("ttm:Q", title="TTM (years)"),
+                    y=alt.Y("iv:Q", title="ATM Implied Vol"),
+                    color="type:N",
+                    tooltip=["expiry", "strike", "iv"],
+                )
+                .properties(width=700, height=350)
+            )
+            st.altair_chart(atm_chart, use_container_width=True)
+        else:
+            st.info("No near-ATM points found for the surface preview.")
+
+    
 # ===== TAB 5: Bonds (numeric & dates) =====
 with tab5:
     st.subheader("Bond Pricer — Price, YTM, Duration & Convexity")
