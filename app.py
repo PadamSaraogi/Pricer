@@ -330,152 +330,270 @@ with tab2:
 
 # ===== TAB 3: Chain & Smiles =====
 with tab3:
-    opts = render_options_inputs("opt_inputs_tab3")
-    st.subheader("Options Chain (CSV) → Bulk IV & Smiles")
-    chain_file = st.file_uploader("Upload CSV with: K, Mid or Bid+Ask or Price; optional T (years), type (call/put)", type=["csv"], key="chain_upl")
-    if chain_file is not None:
-        try:
-            chain_df = pd.read_csv(chain_file)
-            cols = {c.lower().strip(): c for c in chain_df.columns}
-
-            def getcol(*names):
-                for n in names:
-                    if n in cols:
-                        return cols[n]
-                return None
-
-            col_K = getcol("k", "strike")
-            col_bid = getcol("bid"); col_ask = getcol("ask")
-            col_mid = getcol("mid", "mkt_mid"); col_px = getcol("price", "last", "market_price")
-            col_T = getcol("t", "ttm", "maturity", "time_to_maturity_years")
-            col_ty = getcol("type", "option_type")
-
-            if col_K is None:
-                st.error("CSV must include strike column [K/strike].")
+    import math
+    from datetime import datetime
+    from typing import Optional
+    
+    import altair as alt
+    
+    
+    # ==============================
+    # Black–Scholes + IV utilities
+    # ==============================
+    
+    def _norm_cdf(x: float) -> float:
+        """Standard normal CDF using math.erf (no SciPy)."""
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+    
+    
+    def bs_price(
+        S: float,
+        K: float,
+        r: float,
+        q: float,
+        T: float,
+        sigma: float,
+        option_type: str,
+    ) -> float:
+        """
+        Black–Scholes price for a European call/put on index/stock with cont. dividend.
+        option_type: 'C' or 'P' (case-insensitive).
+        """
+        option_type = option_type.upper()
+        if T <= 0 or sigma <= 0:
+            # fallback: intrinsic only
+            if option_type == "C":
+                return max(S - K, 0.0)
             else:
-                df = chain_df.copy()
-                df["K"] = df[col_K].astype(float)
-                if col_mid is not None:
-                    price_series = df[col_mid].astype(float)
-                elif col_bid is not None and col_ask is not None:
-                    price_series = (df[col_bid].astype(float) + df[col_ask].astype(float)) / 2.0
-                elif col_px is not None:
-                    price_series = df[col_px].astype(float)
-                else:
-                    st.error("Provide Mid or Bid/Ask or Price column.")
-                    price_series = None
-
-                df["T_row"] = df[col_T].astype(float) if col_T is not None else opts["T"]
-                if col_ty is not None:
-                    df["otype"] = df[col_ty].astype(str).str.lower().str.strip().replace({"c": "call", "p": "put"})
-                    df.loc[~df["otype"].isin(["call", "put"]), "otype"] = opts["opt_type"].lower()
-                else:
-                    df["otype"] = opts["opt_type"].lower()
-
-                if price_series is not None:
-                    df_iv = cached_compute_chain_iv(
-                        df.assign(MarketPrice=price_series),
-                        S0=opts["S_for_options"], r=opts["r"], q=opts["q"],
-                        default_T=opts["T"], default_type=opts["opt_type"].lower(), sigma_seed=max(opts["sigma"], 1e-6)
-                    )
-
-                    if {"K", "T", "otype", "IV"}.issubset(df_iv.columns):
-                        out_df = df_iv.copy()
-                        if "IV_%" not in out_df.columns:
-                            out_df["IV_%"] = out_df["IV"] * 100.0
-                        if "MarketPrice" not in out_df.columns:
-                            out_df["MarketPrice"] = price_series.values
-                        if "Tag" not in out_df.columns:
-                            tags = []
-                            for k in out_df["K"].values:
-                                tags.append("ITM" if (opts["opt_type"].lower()=="call" and opts["S_for_options"]>k) or (opts["opt_type"].lower()=="put" and opts["S_for_options"]<k) else "OTM")
-                            out_df["Tag"] = tags
-                    else:
-                        # Fallback manual solver
-                        iv_list, tag_list, t_list = [], [], []
-                        for k, px, t, ty in zip(df["K"], price_series, df["T_row"], df["otype"]):
-                            _in = OptionInput(S0=opts["S_for_options"], K=float(k), r=opts["r"], sigma=max(opts["sigma"], 1e-6), T=float(t), q=opts["q"])
-                            iv = implied_vol(float(px), _in, ty)
-                            if iv is None:
-                                iv_list.append(float("nan")); tag_list.append("no-root")
-                            else:
-                                iv_list.append(iv)
-                                G_row = bs_greeks(_in)
-                                tag_list.append(moneyness_tags(opts["S_for_options"], float(k), G_row["d1"])["tag"])
-                            t_list.append(t)
-                        out_df = pd.DataFrame({"K": df["K"], "T": t_list, "otype": df["otype"], "MarketPrice": price_series, "IV": iv_list})
-                        out_df["IV_%"] = out_df["IV"] * 100.0
-                        out_df["Tag"] = tag_list
-
-                    st.dataframe(
-                        out_df[["K", "T", "otype", "MarketPrice", "IV", "IV_%", "Tag"]]
-                        .sort_values(["T", "K"])
-                        .style.format({"MarketPrice": "{:.4f}", "IV": "{:.6f}", "IV_%": "{:.3f}"}),
-                        use_container_width=True
-                    )
-
-                    st.markdown("**IV Smile (IV vs Strike)**")
-                    valid = out_df.dropna(subset=["IV"])
-                    if not valid.empty:
-                        for tval in sorted(valid["T"].unique()):
-                            sub = valid[valid["T"] == tval].sort_values("K")
-                            fig, ax = plt.subplots()
-                            ax.plot(sub["K"], sub["IV"] * 100.0, marker="o")
-                            ax.set_xlabel("Strike (K)"); ax.set_ylabel("IV (%)"); ax.set_title(f"T={tval:.4f} yrs")
-                            st.pyplot(fig, use_container_width=True)
-
-                    out = out_df.sort_values(["T", "K"]).to_csv(index=False).encode("utf-8")
-                    st.download_button("Download processed chain (CSV)", data=out, file_name="options_chain_with_iv.csv", mime="text/csv")
-        except Exception as e:
-            st.error(f"Could not process CSV: {e}")
-
-# ===== TAB 4: Vol Surface =====
-with tab4:
-    opts = render_options_inputs("opt_inputs_tab4")
-    st.subheader("Volatility Surface (K × T)")
-    surf_file = st.file_uploader("Upload multi-expiry CSV (K, T, price fields; optional type)", type=["csv"], key="surf_upl")
-    if surf_file is not None:
+                return max(K - S, 0.0)
+    
+        # forward
+        fwd = S * math.exp((r - q) * T)
+        vol_sqrtT = sigma * math.sqrt(T)
         try:
-            raw = pd.read_csv(surf_file)
-            df_iv = cached_compute_chain_iv(
-                raw, S0=opts["S_for_options"], r=opts["r"], q=opts["q"], default_T=opts["T"], default_type=opts["opt_type"].lower(), sigma_seed=max(opts["sigma"], 1e-6)
+            d1 = (math.log(fwd / K) + 0.5 * sigma * sigma * T) / vol_sqrtT
+        except ValueError:
+            # log domain errors, etc.
+            return float("nan")
+        d2 = d1 - vol_sqrtT
+    
+        if option_type == "C":
+            # discounted forward call
+            return math.exp(-r * T) * (fwd * _norm_cdf(d1) - K * _norm_cdf(d2))
+        else:
+            # put via call–put parity
+            call = math.exp(-r * T) * (fwd * _norm_cdf(d1) - K * _norm_cdf(d2))
+            return call - math.exp(-r * T) * (fwd - K)
+    
+    
+    def implied_vol_bs(
+        market_price: float,
+        S: float,
+        K: float,
+        r: float,
+        q: float,
+        T: float,
+        option_type: str,
+        sigma_low: float = 1e-4,
+        sigma_high: float = 10.0,
+        max_iter: int = 100,
+        tol: float = 1e-6,
+    ) -> float:
+        """
+        Robust bisection IV solver.
+    
+        - Rejects rows where price < intrinsic or <= 0.
+        - Uses wide sigma bounds to allow very high IVs (~1000%+).
+        - Returns np.nan if cannot find a solution.
+        """
+        option_type = option_type.upper()
+        intrinsic = max(S - K, 0.0) if option_type == "C" else max(K - S, 0.0)
+    
+        # Basic sanity checks
+        if market_price <= 0 or market_price < intrinsic:
+            return np.nan
+    
+        # Price at low/high
+        p_low = bs_price(S, K, r, q, T, sigma_low, option_type)
+        p_high = bs_price(S, K, r, q, T, sigma_high, option_type)
+    
+        # If even huge sigma can't reach market_price -> unrealistic
+        if np.isnan(p_low) or np.isnan(p_high) or p_high < market_price:
+            return np.nan
+    
+        low, high = sigma_low, sigma_high
+        for _ in range(max_iter):
+            mid = 0.5 * (low + high)
+            p_mid = bs_price(S, K, r, q, T, mid, option_type)
+    
+            if np.isnan(p_mid):
+                return np.nan
+    
+            diff = p_mid - market_price
+            if abs(diff) < tol:
+                return mid
+    
+            if diff > 0:
+                high = mid
+            else:
+                low = mid
+    
+        return mid  # best effort
+    
+        st.subheader("Upload Option Chain CSV")
+    
+        st.markdown(
+            """
+            **Expected CSV columns (exact names):**
+            - `strike`  
+            - `type` (C/P or c/p)  
+            - `price` (market option price)  
+            - `spot`  
+            - `rate` (risk-free, decimal)  
+            - `dividend` (q, decimal)  
+            - `ttm` (time to maturity in years)  
+            - `expiry` (YYYY-MM-DD)
+            """
+        )
+    
+        uploaded = st.file_uploader("Upload CSV", type=["csv"], key="chain_csv")
+    
+        if uploaded is None:
+            st.info("Upload your CSV to see IV smiles and surfaces.")
+        else:
+            # ---- Read + normalise columns ----
+            try:
+                df = pd.read_csv(uploaded)
+            except Exception as e:
+                st.error(f"Could not read CSV: {e}")
+                st.stop()
+    
+            # standardise column names to lower
+            df.columns = [c.strip().lower() for c in df.columns]
+    
+            required_cols = {"strike", "type", "price", "spot", "rate", "dividend", "ttm", "expiry"}
+            missing = required_cols - set(df.columns)
+            if missing:
+                st.error(f"CSV missing required columns: {', '.join(sorted(missing))}")
+                st.stop()
+    
+            # parse expiry to datetime
+            df["expiry"] = pd.to_datetime(df["expiry"], errors="coerce")
+    
+            # clean type column
+            df["type"] = df["type"].astype(str).str.strip().str.upper()
+            df = df[df["type"].isin(["C", "P"])]
+    
+            # numeric types
+            for col in ["strike", "price", "spot", "rate", "dividend", "ttm"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+    
+            df = df.dropna(subset=["strike", "price", "spot", "rate", "dividend", "ttm", "expiry"])
+    
+            if df.empty:
+                st.error("No valid rows after cleaning. Check your CSV.")
+                st.stop()
+    
+            st.write("### Cleaned option chain (all expiries)")
+            st.dataframe(df.head(50), use_container_width=True)
+    
+            # ---- Expiry selection for IV smile ----
+            expiries = sorted(df["expiry"].dropna().unique())
+            if len(expiries) == 0:
+                st.error("No valid expiry dates parsed from 'expiry' column.")
+                st.stop()
+    
+            exp_choice = st.selectbox(
+                "Select expiry for IV smile",
+                options=expiries,
+                format_func=lambda x: x.strftime("%Y-%m-%d"),
             )
-            st.dataframe(
-                df_iv[["K", "T", "otype", "MarketPrice", "IV_%", "Tag"]].sort_values(["T", "K"])
-                .style.format({"MarketPrice": "{:.4f}", "IV_%": "{:.3f}"}),
-                use_container_width=True
+    
+            df_exp = df[df["expiry"] == exp_choice].copy()
+            st.write(f"### Chain for expiry {exp_choice.strftime('%Y-%m-%d')}")
+            st.dataframe(df_exp, use_container_width=True)
+    
+            # ---- Compute IV for this expiry ----
+            st.write("### Computing IV for selected expiry…")
+            ivs = []
+            for _, row in df_exp.iterrows():
+                iv = implied_vol_bs(
+                    market_price=row["price"],
+                    S=row["spot"],
+                    K=row["strike"],
+                    r=row["rate"],
+                    q=row["dividend"],
+                    T=row["ttm"],
+                    option_type=row["type"],
+                )
+                ivs.append(iv)
+    
+            df_exp["iv"] = ivs
+            df_valid = df_exp.replace([np.inf, -np.inf], np.nan).dropna(subset=["iv"])
+    
+            st.write(f"Valid IV rows for this expiry: **{len(df_valid)} / {len(df_exp)}**")
+            st.dataframe(df_valid, use_container_width=True)
+    
+            # ---- Plot IV smile for this expiry ----
+            if df_valid.empty:
+                st.warning("No valid IVs solved for this expiry. Check price vs intrinsic, ttm, etc.")
+            else:
+                smile_chart = (
+                    alt.Chart(df_valid)
+                    .mark_line(point=True)
+                    .encode(
+                        x=alt.X("strike:Q", title="Strike"),
+                        y=alt.Y("iv:Q", title="Implied Vol (decimal)"),
+                        color=alt.Color("type:N", title="Type (C/P)"),
+                        tooltip=["strike", "type", "price", "iv"],
+                    )
+                    .properties(width=700, height=400, title="IV Smile")
+                )
+                st.altair_chart(smile_chart, use_container_width=True)
+    
+            # ---- IV surface across ALL expiries ----
+            st.write("### IV Surface Data (all expiries)")
+    
+            iv_all = []
+            for _, row in df.iterrows():
+                iv = implied_vol_bs(
+                    market_price=row["price"],
+                    S=row["spot"],
+                    K=row["strike"],
+                    r=row["rate"],
+                    q=row["dividend"],
+                    T=row["ttm"],
+                    option_type=row["type"],
+                )
+                iv_all.append(iv)
+    
+            df["iv"] = iv_all
+            df_surface = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["iv"])
+    
+            st.write(f"Total rows with valid IV: **{len(df_surface)} / {len(df)}**")
+            st.dataframe(df_surface.head(50), use_container_width=True)
+    
+            # Example 2D slice: IV vs TTM by moneyness bucket
+            st.write("#### Example: IV vs TTM at ATM-ish strikes (for quick sanity check)")
+            atm_mask = (df_surface["strike"] >= df_surface["spot"] * 0.98) & (
+                df_surface["strike"] <= df_surface["spot"] * 1.02
             )
-
-            valid = df_iv.dropna(subset=["IV"])
-            if not valid.empty:
-                st.markdown("**IV Smiles by Expiry**")
-                for t_val in sorted(valid["T"].unique()):
-                    sub = valid[valid["T"] == t_val].sort_values("K")
-                    fig, ax = plt.subplots()
-                    ax.plot(sub["K"], sub["IV_%"], marker="o", linestyle="-")
-                    ax.set_xlabel("Strike (K)"); ax.set_ylabel("Implied Volatility (%)")
-                    ax.set_title(f"Smile — T={t_val:.4f} yrs")
-                    st.pyplot(fig, use_container_width=True)
-
-                from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-                K_arr, T_arr, IVp_arr = prepare_surface_arrays(valid)
-                fig3 = plt.figure(); ax3 = fig3.add_subplot(111, projection="3d")
-                ax3.scatter(K_arr, T_arr, IVp_arr)
-                ax3.set_xlabel("Strike (K)"); ax3.set_ylabel("Expiry (T, years)"); ax3.set_zlabel("IV (%)")
-                ax3.set_title("IV Surface — 3D scatter"); st.pyplot(fig3, use_container_width=True)
-
-                fig4, ax4 = plt.subplots()
-                try:
-                    tric = ax4.tricontourf(K_arr, T_arr, IVp_arr, levels=12)
-                    fig4.colorbar(tric, ax=ax4, label="IV (%)")
-                    ax4.set_xlabel("Strike (K)"); ax4.set_ylabel("Expiry (T, years)")
-                    ax4.set_title("IV Surface — contour"); st.pyplot(fig4, use_container_width=True)
-                except Exception:
-                    st.info("Not enough distinct points for a filled contour; 3D scatter still shows shape.")
-            out2 = df_iv.sort_values(["T", "K"]).to_csv(index=False).encode("utf-8")
-            st.download_button("Download IV dataset (CSV)", data=out2, file_name="iv_surface_dataset.csv", mime="text/csv")
-        except Exception as e:
-            st.error(f"Error computing IV: {e}")
+            df_atm = df_surface[atm_mask].copy()
+            if not df_atm.empty:
+                atm_chart = (
+                    alt.Chart(df_atm)
+                    .mark_point()
+                    .encode(
+                        x=alt.X("ttm:Q", title="TTM (years)"),
+                        y=alt.Y("iv:Q", title="ATM Implied Vol"),
+                        color="type:N",
+                        tooltip=["expiry", "strike", "iv"],
+                    )
+                    .properties(width=700, height=350)
+                )
+                st.altair_chart(atm_chart, use_container_width=True)
+            else:
+                st.info("No near-ATM points found for the surface preview.")
 
 # ===== TAB 5: Bonds (numeric & dates) =====
 with tab5:
