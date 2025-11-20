@@ -214,12 +214,11 @@ def render_options_inputs(defaults_key: str = "opt_defaults"):
 
 
 # ===================== TABS =====================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
+tab1, tab2, tab3, tab5, tab6, tab7, tab8, tab9 = st.tabs(
     [
         "Option Pricer",
         "American (CRR)",
         "Chain & Smiles",
-        "Vol Surface",
         "Bonds",
         "Yield Curve",
         "Swaps",
