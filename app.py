@@ -1163,6 +1163,57 @@ with tab4:
                     for ln in summary_lines:
                         st.markdown(f"- {ln}")
 
+# -------- Helper: Beginner-friendly summary for Yield Curve (Tab 5) --------
+def summarize_yield_curve(curve) -> list[str]:
+    """
+    Build 3–4 short bullets explaining the shape and key points
+    of the bootstrapped zero curve.
+    Expects a YieldCurve with attributes: mats, zeros, dfs.
+    """
+    lines: list[str] = []
+    if curve is None or len(curve.mats) == 0:
+        return lines
+
+    mats = list(curve.mats)
+    zeros = list(curve.zeros)
+
+    # 1) Short vs long end (slope)
+    short_T, long_T = mats[0], mats[-1]
+    short_r, long_r = zeros[0] * 100, zeros[-1] * 100
+
+    if long_r > short_r + 0.10:
+        slope = "upward-sloping"
+        msg = "longer maturities yield more than short ones."
+    elif long_r + 0.10 < short_r:
+        slope = "inverted"
+        msg = "long-term yields are **below** short-term yields (often seen as a stress/recession signal)."
+    else:
+        slope = "fairly flat"
+        msg = "little difference between short and long rates."
+
+    lines.append(
+        f"Curve is **{slope}**: short end ≈ {short_r:.2f}% at T={short_T:.2f} yrs, long end ≈ {long_r:.2f}% at T={long_T:.2f} yrs — {msg}"
+    )
+
+    # 2) Mid-point rate
+    if len(mats) >= 3:
+        mid_i = len(mats) // 2
+        lines.append(
+            f"Mid-horizon rate around T ≈ {mats[mid_i]:.2f} yrs is ≈ {zeros[mid_i] * 100:.2f}%, between the short and long ends."
+        )
+
+    # 3) Overall level
+    avg_r = sum(zeros) / len(zeros) * 100
+    lines.append(
+        f"Average level of rates across the curve is ≈ {avg_r:.2f}%."
+    )
+
+    # 4) Hint about forward rates
+    lines.append(
+        "Use the forward-rate box below to see the implied short-term rate between any two maturities T₁ and T₂."
+    )
+
+    return lines[:4]
 
 # ===== TAB 5: Yield Curve =====
 with tab5:
@@ -1326,6 +1377,13 @@ with tab5:
         t1 = colf1.number_input("Forward start T₁ (years)", value=1.0, step=0.25, min_value=0.0)
         t2 = colf2.number_input("Forward end T₂ (years)", value=2.0, step=0.25, min_value=0.01)
         st.metric("Annual forward rate T₁ → T₂", f"{curve.get_fwd(t1, t2) * 100:.3f}%")
+
+        # 🔰 Beginner-friendly interpretation of the curve
+        summary_lines_curve = summarize_yield_curve(curve)
+        with st.expander("notes & interpretation (Yield Curve)", expanded=True):
+            for ln in summary_lines_curve:
+                st.markdown(f"- {ln}")
+
 
 
 # ===== TAB 6: Swaps =====
