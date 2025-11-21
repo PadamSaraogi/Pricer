@@ -456,7 +456,7 @@ with tab1:
         iv_single=iv,
         iv_mid=iv_mid,
     )
-    with st.expander("Beginner notes & interpretation", expanded=True):
+    with st.expander("notes & interpretation", expanded=True):
         for ln in analysis_lines:
             st.markdown(f"- {ln}")
 
