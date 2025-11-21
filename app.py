@@ -941,7 +941,56 @@ with tab3:
         else:
             st.info("No near-ATM points found for the surface preview.")
 
-            
+# -------- Helper: Beginner-friendly summary for Bonds (Tab 4) --------
+def summarize_bond_output(face, coupon_pct, ytm, price, mac, mod, conv, mode_label):
+    """
+    Returns 3–4 short, high-signal bullets explaining what the bond output means.
+    """
+
+    lines = []
+
+    # 1) Premium/Par/Discount classification
+    if abs(price - face) < 1e-6 or abs((price - face) / face) < 0.005:
+        lines.append(
+            f"The bond is trading at **par** (Price ≈ Face). Coupon rate ≈ market yield."
+        )
+    elif price > face:
+        lines.append(
+            f"The bond trades at a **premium** (Price {price:.2f} > Face {face:.2f}) → coupon is above market yields."
+        )
+    else:
+        lines.append(
+            f"The bond trades at a **discount** (Price {price:.2f} < Face {face:.2f}) → coupon is below market yields."
+        )
+
+    # 2) Yield meaning
+    if ytm is not None:
+        lines.append(
+            f"YTM ≈ **{ytm * 100:.3f}%** → approximate annual return if held to maturity assuming coupon reinvestment at YTM."
+        )
+
+    # 3) Duration interpretation
+    if mod is not None:
+        if mod < 3:
+            risk_label = "low interest-rate sensitivity"
+        elif mod < 7:
+            risk_label = "moderate interest-rate sensitivity"
+        else:
+            risk_label = "high interest-rate sensitivity"
+
+        lines.append(
+            f"Modified duration ≈ **{mod:.3f}** → a 1% move in yields → price changes by ~{mod:.2f}%. ({risk_label})"
+        )
+
+    # 4) Convexity interpretation
+    if conv is not None:
+        lines.append(
+            f"Convexity ≈ **{conv:.2f}** → improves accuracy of duration-based estimates for larger rate moves."
+        )
+
+    return lines[:4]
+
+
 # ===== TAB 4: Bonds (numeric & dates) =====
 with tab4:
     st.subheader("Bond Pricer — Price, YTM, Duration & Convexity")
@@ -952,42 +1001,87 @@ with tab4:
     coupon_pct = bc2.number_input("Coupon rate (% p.a.)", value=5.00, step=0.25, format="%.2f") / 100.0
     freq = int(bc3.selectbox("Payments per year", options=[1, 2, 4], index=1))
 
+    # ======================================
+    # ===== Numeric T branch =====
+    # ======================================
     if mode_bond_input == "Numeric T":
         bc4, bc5 = st.columns(2)
         T_years = bc4.number_input("Time to maturity (years)", min_value=0.25, value=5.0, step=0.25)
         ytm_pct = bc5.number_input("Yield to maturity (% p.a.)", value=6.00, step=0.10, format="%.2f") / 100.0
 
         mode_bond = st.radio("Mode", ["Inputs → Price", "Price → YTM"], horizontal=True)
+
+        # ----- Inputs → Price -----
         if mode_bond == "Inputs → Price":
             P = price_bond(face, coupon_pct, ytm_pct, T_years, freq)
             mac = macaulay_duration(face, coupon_pct, ytm_pct, T_years, freq)
             mod = modified_duration(face, coupon_pct, ytm_pct, T_years, freq)
             conv = convexity_numeric(face, coupon_pct, ytm_pct, T_years, freq)
+
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Price", f"{P:,.4f}")
             c2.metric("Macaulay Duration (yrs)", f"{mac:,.4f}")
             c3.metric("Modified Duration (yrs)", f"{mod:,.4f}")
             c4.metric("Convexity", f"{conv:,.4f}")
+
+            # ---- Beginner analysis ----
+            summary_lines = summarize_bond_output(
+                face=face,
+                coupon_pct=coupon_pct,
+                ytm=ytm_pct,
+                price=P,
+                mac=mac,
+                mod=mod,
+                conv=conv,
+                mode_label="Inputs → Price (Numeric T)",
+            )
+            with st.expander("Beginner notes & interpretation", expanded=True):
+                for ln in summary_lines:
+                    st.markdown(f"- {ln}")
+
+        # ----- Price → YTM -----
         else:
             target_price = st.number_input("Target clean price", min_value=0.01, value=100.00, step=0.25)
             ytm_solved = ytm_from_price(target_price, face, coupon_pct, T_years, freq)
+
             if ytm_solved is None:
                 st.error("Could not solve YTM in bounds [-99%, 100%]. Check inputs.")
             else:
                 mac = macaulay_duration(face, coupon_pct, ytm_solved, T_years, freq)
                 mod = modified_duration(face, coupon_pct, ytm_solved, T_years, freq)
                 conv = convexity_numeric(face, coupon_pct, ytm_solved, T_years, freq)
+
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Solved YTM", f"{ytm_solved * 100:.4f}%")
                 c2.metric("Macaulay Duration (yrs)", f"{mac:,.4f}")
                 c3.metric("Modified Duration (yrs)", f"{mod:,.4f}")
                 c4.metric("Convexity", f"{conv:,.4f}")
 
+                # ---- Beginner interpretation ----
+                summary_lines = summarize_bond_output(
+                    face=face,
+                    coupon_pct=coupon_pct,
+                    ytm=ytm_solved,
+                    price=target_price,
+                    mac=mac,
+                    mod=mod,
+                    conv=conv,
+                    mode_label="Price → YTM (Numeric T)",
+                )
+                with st.expander("Beginner notes & interpretation", expanded=True):
+                    for ln in summary_lines:
+                        st.markdown(f"- {ln}")
+
+    # ======================================
+    # ===== Dates branch =====
+    # ======================================
     else:
         colD1, colD2, colD3 = st.columns(3)
         val_d_str = colD1.text_input("Settlement / Valuation date (YYYY-MM-DD)", value=str(date.today()))
-        mat_d_str = colD2.text_input("Maturity date (YYYY-MM-DD)",
-                                     value=str(date.today().replace(year=date.today().year + 5)))
+        mat_d_str = colD2.text_input(
+            "Maturity date (YYYY-MM-DD)",
+            value=str(date.today().replace(year=date.today().year + 5)),
+        )
         dc_bond: DayCount = colD3.selectbox(
             "Day-count",
             ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"],
@@ -1011,28 +1105,65 @@ with tab4:
         ) / 100.0
         mode_bond_d = st.radio("Mode (dates)", ["Inputs → Price", "Price → YTM"], horizontal=True)
 
+        # ----- Inputs → Price (Dates) -----
         if mode_bond_d == "Inputs → Price":
             P = price_bond_dates(face, coupon_pct, ytm_pct_d, settle_d, mat_d, freq, dc_bond, biz)
             mac = macaulay_duration_dates(face, coupon_pct, ytm_pct_d, settle_d, mat_d, freq, dc_bond, biz)
             mod = modified_duration_dates(face, coupon_pct, ytm_pct_d, settle_d, mat_d, freq, dc_bond, biz)
+
             c1, c2, c3 = st.columns(3)
             c1.metric("Price", f"{P:,.4f}")
             c2.metric("Macaulay Duration (yrs)", f"{mac:,.4f}")
             c3.metric("Modified Duration (yrs)", f"{mod:,.4f}")
+
+            # ---- Beginner interpretation ----
+            summary_lines = summarize_bond_output(
+                face=face,
+                coupon_pct=coupon_pct,
+                ytm=ytm_pct_d,
+                price=P,
+                mac=mac,
+                mod=mod,
+                conv=None,
+                mode_label="Inputs → Price (Dates)",
+            )
+            with st.expander("Beginner notes & interpretation", expanded=True):
+                for ln in summary_lines:
+                    st.markdown(f"- {ln}")
+
+        # ----- Price → YTM (Dates) -----
         else:
             target_price = st.number_input("Target clean price (dates)", min_value=0.01, value=100.00, step=0.25)
             ytm_solved = ytm_from_price_dates(
                 target_price, face, coupon_pct, settle_d, mat_d, freq, dc_bond, biz
             )
+
             if ytm_solved is None:
                 st.error("Could not solve YTM in bounds [-99%, 100%]. Check inputs.")
             else:
                 mac = macaulay_duration_dates(face, coupon_pct, ytm_solved, settle_d, mat_d, freq, dc_bond, biz)
                 mod = modified_duration_dates(face, coupon_pct, ytm_solved, settle_d, mat_d, freq, dc_bond, biz)
+
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Solved YTM", f"{ytm_solved * 100:.4f}%")
                 c2.metric("Macaulay Duration (yrs)", f"{mac:,.4f}")
                 c3.metric("Modified Duration (yrs)", f"{mod:,.4f}")
+
+                # ---- Beginner interpretation ----
+                summary_lines = summarize_bond_output(
+                    face=face,
+                    coupon_pct=coupon_pct,
+                    ytm=ytm_solved,
+                    price=target_price,
+                    mac=mac,
+                    mod=mod,
+                    conv=None,
+                    mode_label="Price → YTM (Dates)",
+                )
+                with st.expander("Beginner notes & interpretation", expanded=True):
+                    for ln in summary_lines:
+                        st.markdown(f"- {ln}")
+
 
 
 # ===== TAB 5: Yield Curve =====
