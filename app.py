@@ -260,7 +260,13 @@ with tab1:
     bid = colm1.number_input("Bid", min_value=0.0, value=0.0, step=0.1, key="bid1")
     ask = colm2.number_input("Ask", min_value=0.0, value=0.0, step=0.1, key="ask1")
     mid = 0.5 * (bid + ask) if (bid > 0 and ask > 0 and ask >= bid) else None
-    mkt_price = st.number_input("Single market price (for IV)", min_value=0.0, value=0.0, step=0.1, key="mkt1")
+    mkt_price = st.number_input(
+        "Single market price (for IV)",
+        min_value=0.0,
+        value=0.0,
+        step=0.1,
+        key="mkt1",
+    )
 
     inp = OptionInput(
         S0=opts["S_for_options"],
@@ -280,18 +286,21 @@ with tab1:
 
     tag_info = moneyness_tags(opts["S_for_options"], opts["K"], d1)
 
+    # Top-level metrics
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Call price", f"{call:,.4f}")
     m2.metric("Put price", f"{put:,.4f}")
     m3.metric("S/K", tag_info["S_over_K"])
     m4.metric("Moneyness tag", tag_info["tag"])
 
+    # Moneyness details
     with st.expander("Moneyness details", expanded=False):
         mtc1, mtc2, mtc3 = st.columns(3)
         mtc1.metric("log-moneyness", tag_info["log_moneyness"])
         mtc2.metric("d₁", tag_info["d1"])
         mtc3.metric("d₂", f"{d2:.4f}")
 
+    # Core Greeks
     st.markdown("### Greeks (core)")
     greek_df_basic = pd.DataFrame(
         {
@@ -315,6 +324,7 @@ with tab1:
         use_container_width=True,
     )
 
+    # More Greeks
     with st.expander("More Greeks (annual Theta, Rho)", expanded=False):
         greek_df_adv = pd.DataFrame(
             {
@@ -334,9 +344,13 @@ with tab1:
             use_container_width=True,
         )
 
+    # Implied vol
     st.markdown("### Implied Volatility (from single market price)")
     coliv1, coliv2 = st.columns(2)
     otype = opts["opt_type"].lower()
+    iv = None
+    iv_mid = None
+
     if mkt_price > 0:
         iv = implied_vol(mkt_price, inp, otype)
         if iv is not None:
@@ -351,6 +365,24 @@ with tab1:
         else:
             coliv2.metric("IV (Bid/Ask mid)", "No root")
 
+    # 🔰 Beginner-friendly, output-based analysis
+    analysis_lines = summarize_option_output(
+        opts=opts,
+        call=call,
+        put=put,
+        d1=d1,
+        d2=d2,
+        G=G,
+        tag_info=tag_info,
+        mkt_price=mkt_price,
+        iv_single=iv,
+        iv_mid=iv_mid,
+    )
+    with st.expander("Beginner notes & interpretation", expanded=True):
+        for ln in analysis_lines:
+            st.markdown(f"- {ln}")
+
+    # Payoff chart
     st.markdown("### Payoff at expiry")
     S_min = max(0.01, opts["S_for_options"] * 0.4)
     S_max = opts["S_for_options"] * 1.6
@@ -371,6 +403,7 @@ with tab1:
     ax1.legend()
     st.pyplot(fig1, use_container_width=True)
 
+    # Value vs spot chart
     st.markdown("### Option value today vs spot")
     call_vals, put_vals = [], []
     for s_ in S_grid:
@@ -396,10 +429,11 @@ with tab1:
     ax2.axvline(opts["S_for_options"], linestyle="--", linewidth=1, label="Current spot")
     ax2.set_xlabel("Spot (S₀,eff)")
     ax2.set_ylabel("Option value today")
-    ax2.set_title(f"{opts['opt_type']} value vs effective spot (Black–Scholes, today’s price)")
+    ax2.set_title(
+        f"{opts['opt_type']} value vs effective spot (Black–Scholes, today’s price)"
+    )
     ax2.legend()
     st.pyplot(fig2, use_container_width=True)
-
 
 # ===== TAB 2: American (CRR) =====
 with tab2:
