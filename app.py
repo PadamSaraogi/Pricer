@@ -513,12 +513,73 @@ with tab1:
     ax2.legend()
     st.pyplot(fig2, use_container_width=True)
 
+# -------- Helper: compact summary for American vs European (CRR) --------
+def summarize_crr_output(opt_type: str, euro_tree: float, amer_tree: float, bs_euro: float, steps: int):
+    lines: list[str] = []
+
+    # 1) CRR European vs BS
+    diff_abs = euro_tree - bs_euro
+    diff_rel = diff_abs / bs_euro if bs_euro != 0 else 0.0
+    if abs(diff_rel) < 0.02:
+        lines.append(
+            f"CRR European ≈ {euro_tree:.4f} is **very close** to Black–Scholes {bs_euro:.4f} → the tree with {steps} steps is well aligned with the continuous model."
+        )
+    elif abs(diff_rel) < 0.05:
+        lines.append(
+            f"CRR European ≈ {euro_tree:.4f} vs Black–Scholes {bs_euro:.4f} → small deviation (~{diff_rel*100:.1f}%), acceptable but you can increase steps for a tighter match."
+        )
+    else:
+        lines.append(
+            f"CRR European ≈ {euro_tree:.4f} vs Black–Scholes {bs_euro:.4f} → larger deviation (~{diff_rel*100:.1f}%), consider using more steps or checking inputs."
+        )
+
+    # 2) Early-exercise premium
+    ee_prem = amer_tree - bs_euro
+    if abs(ee_prem) < 1e-6 or abs(ee_prem / bs_euro) < 0.005:
+        lines.append(
+            f"American {opt_type} ≈ {amer_tree:.4f} is almost the same as European → **early exercise adds almost no value** here."
+        )
+    else:
+        lines.append(
+            f"American {opt_type} ≈ {amer_tree:.4f} is higher than European by about {ee_prem:.4f} → **early exercise flexibility is worth something** in this setup."
+        )
+
+    # 3) Relative premium size
+    if bs_euro > 0:
+        prem_pct = ee_prem / bs_euro * 100
+        lines.append(
+            f"Early-exercise premium is about {prem_pct:.2f}% of the European price (vs Black–Scholes)."
+        )
+
+    # 4) Steps guidance
+    if abs(diff_rel) > 0.05:
+        lines.append(
+            f"Because CRR vs BS differ noticeably, increasing steps above {steps} can reduce discretisation error."
+        )
+    else:
+        lines.append(
+            f"{steps} steps already give a reasonable approximation; increasing further mainly improves smoothness, not intuition."
+        )
+
+    return lines[:4]
+
+
+# ===== TAB 2: American (CRR) =====
 # ===== TAB 2: American (CRR) =====
 with tab2:
     opts = render_options_inputs("opt_inputs_tab2")
     st.subheader("American vs European (CRR Binomial)")
+    st.caption("Discrete dividends are applied via S₀,eff in the underlying start node.")
 
-    steps = st.slider("CRR steps (accuracy vs speed)", min_value=25, max_value=1000, value=200, step=25, key="crr_steps")
+    steps = st.slider(
+        "CRR steps (accuracy vs speed)",
+        min_value=25,
+        max_value=1000,
+        value=200,
+        step=25,
+        key="crr_steps",
+    )
+
     inp = OptionInput(
         S0=opts["S_for_options"],
         K=opts["K"],
@@ -528,16 +589,34 @@ with tab2:
         q=opts["q"],
     )
     otype = opts["opt_type"].lower()
+
+    # Tree prices
     euro_tree = crr_price_european(inp, otype, steps)
     amer_tree = crr_price_american(inp, otype, steps)
-    bs_euro = bs_prices(inp)[0] if otype == "call" else bs_prices(inp)[1]
+
+    # Continuous-time European benchmark
+    bs_call, bs_put, _, _ = bs_prices(inp)
+    bs_euro = bs_call if otype == "call" else bs_put
 
     c1, c2, c3 = st.columns(3)
     c1.metric("CRR European", f"{euro_tree:,.6f}")
     c2.metric("BS European", f"{bs_euro:,.6f}", delta=f"{(euro_tree - bs_euro):+.6f}")
     c3.metric("CRR American", f"{amer_tree:,.6f}")
-    st.caption(f"Early-exercise premium vs BS: {amer_tree - bs_euro:+.6f}.")
 
+    early_ex_premium = amer_tree - bs_euro
+    st.caption(f"Early-exercise premium vs BS: {early_ex_premium:+.6f}.")
+
+    # 🔰 Beginner-friendly, output-based analysis
+    analysis_lines_crr = summarize_crr_output(
+        opt_type=opts["opt_type"],
+        euro_tree=euro_tree,
+        amer_tree=amer_tree,
+        bs_euro=bs_euro,
+        steps=steps,
+    )
+    with st.expander("Beginner notes & interpretation (CRR vs BS)", expanded=True):
+        for ln in analysis_lines_crr:
+            st.markdown(f"- {ln}")
 
 # ===== TAB 3: Chain & Surface =====
 with tab3:
