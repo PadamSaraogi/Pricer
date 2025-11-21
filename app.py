@@ -1385,6 +1385,148 @@ with tab5:
                 st.markdown(f"- {ln}")
 
 
+# -------- Helper: Beginner-friendly summary for Swaps (Tab 6) --------
+def summarize_swap_output(par_rate, fixed_rate, pv, dv01_val, notional, T, freq):
+    """
+    Compact interpretation of a plain-vanilla fixed-for-floating swap.
+    All rates are decimals (e.g. 0.05 for 5%).
+    """
+    lines: list[str] = []
+
+    # 1) Your fixed vs par
+    diff_bps = (fixed_rate - par_rate) * 10_000  # in basis points
+    if abs(diff_bps) < 1:
+        lines.append(
+            f"Fixed rate {fixed_rate*100:.3f}% is essentially at **par** (par ≈ {par_rate*100:.3f}%)."
+        )
+    elif fixed_rate > par_rate:
+        lines.append(
+            f"Fixed rate {fixed_rate*100:.3f}% is **above** par ({par_rate*100:.3f}%) → receiving fixed is more valuable than paying it."
+        )
+    else:
+        lines.append(
+            f"Fixed rate {fixed_rate*100:.3f}% is **below** par ({par_rate*100:.3f}%) → paying fixed is more attractive than receiving it."
+        )
+
+    # 2) PV sign/value
+    if abs(pv) < 1e-6:
+        lines.append(
+            f"Swap PV is ≈ 0 on notional {notional:,.0f} → this looks like a fairly **at-market** swap."
+        )
+    elif pv > 0:
+        lines.append(
+            f"PV ≈ **{pv:,.2f}** (Fixed − Float) → receiving fixed at this rate is **favourable** vs the curve."
+        )
+    else:
+        lines.append(
+            f"PV ≈ **{pv:,.2f}** (Fixed − Float) → paying fixed at this rate is **favourable**; receiving fixed is unattractive."
+        )
+
+    # 3) DV01 = rate risk
+    if dv01_val is not None:
+        lines.append(
+            f"DV01 ≈ **{dv01_val:,.2f}** per +1 bp → a 0.01% parallel shift in rates changes PV by this amount on notional {notional:,.0f}."
+        )
+
+    # 4) Maturity & payment freq
+    lines.append(
+        f"Swap maturity ≈ **{T:.1f} years** with **{freq} fixed payments per year** → longer maturity + larger DV01 = more interest-rate risk."
+    )
+
+    return lines[:4]
+
+
+# -------- Helper: Beginner-friendly summary for Black-76 (Tab 7) --------
+def summarize_b76_output(
+    F0,
+    K,
+    otype,
+    price,
+    delta,
+    gamma,
+    vega,
+    theta_day,
+    rho,
+    iv=None,
+    DF_T=None,
+    T=None,
+):
+    """
+    Compact interpretation of an option on a future/forward priced with Black-76.
+    """
+    lines: list[str] = []
+    opt_label = otype.capitalize()
+
+    # 1) Moneyness
+    if F0 is not None and K is not None:
+        if abs(F0 - K) / K < 0.01:
+            lines.append(
+                f"{opt_label} is **at-the-money**: F₀ ≈ K ({F0:.2f} vs {K:.2f})."
+            )
+        elif (otype == "call" and F0 > K) or (otype == "put" and F0 < K):
+            lines.append(
+                f"{opt_label} is **in-the-money** on F₀ vs K ({F0:.2f} vs {K:.2f})."
+            )
+        else:
+            lines.append(
+                f"{opt_label} is **out-of-the-money** on F₀ vs K ({F0:.2f} vs {K:.2f})."
+            )
+
+    # 2) Price level
+    lines.append(f"Model {opt_label} price ≈ **{price:.4f}** for this future/forward.")
+
+    # 3) Delta & Gamma
+    if abs(delta) < 0.3:
+        sens = "low"
+    elif abs(delta) < 0.7:
+        sens = "moderate"
+    else:
+        sens = "high"
+
+    gamma_desc = "large" if gamma > 0.02 else "small"
+    lines.append(
+        f"Δ (futures) ≈ **{delta:.3f}** → {sens} sensitivity to the futures price; Γ ≈ {gamma:.4f} → {gamma_desc} curvature (how fast Δ changes)."
+    )
+
+    # 4) Theta & Vega
+    decay = (
+        f"loses about {abs(theta_day):.4f} per day as time passes"
+        if theta_day < 0
+        else "has little daily time decay"
+    )
+    if vega > 0.5:
+        vol_sens = "very sensitive to volatility"
+    elif vega > 0.1:
+        vol_sens = "moderately sensitive to volatility"
+    else:
+        vol_sens = "not very sensitive to volatility"
+
+    lines.append(
+        f"Theta/day ≈ **{theta_day:.4f}** → option {decay}. Vega ≈ **{vega:.4f}** → {vol_sens}."
+    )
+
+    # 5) IV / rate sensitivity
+    if iv is not None:
+        iv_pct = iv * 100
+        if iv_pct < 15:
+            lvl = "low"
+        elif iv_pct < 40:
+            lvl = "normal"
+        else:
+            lvl = "high"
+        lines.append(f"Implied volatility ≈ **{iv_pct:.1f}%** → a **{lvl}** volatility regime.")
+
+    if DF_T is None:
+        lines.append(
+            f"Rho ≈ **{rho:.4f}** → sensitivity of price to changes in the discount rate r."
+        )
+    else:
+        lines.append(
+            f"Sensitivity ≈ **{rho:.4f}** → shows how price reacts to changes in the discount factor DF(T)."
+        )
+
+    return lines[:5]
+
 
 # ===== TAB 6: Swaps =====
 with tab6:
@@ -1395,29 +1537,61 @@ with tab6:
         st.info("Bootstrap a curve first in the Yield Curve tab to use swaps.")
     else:
         colS1, colS2, colS3 = st.columns(3)
-        notional = colS1.number_input("Notional", min_value=1_000.0, value=1_000_000.0, step=50_000.0)
-        T_swap = colS2.number_input("Swap maturity T (years)", min_value=0.5, value=5.0, step=0.5)
-        freq = int(colS3.selectbox("Fixed leg payments per year", options=[1, 2, 4], index=1))
+        notional = colS1.number_input(
+            "Notional",
+            min_value=1_000.0,
+            value=1_000_000.0,
+            step=50_000.0
+        )
+        T_swap = colS2.number_input(
+            "Swap maturity T (years)",
+            min_value=0.5,
+            value=5.0,
+            step=0.5
+        )
+        freq = int(
+            colS3.selectbox(
+                "Fixed leg payments per year",
+                options=[1, 2, 4],
+                index=1
+            )
+        )
 
+        # Par rate
         s_par = par_swap_rate(curve, T_swap, freq)
         st.metric("Par swap fixed rate", f"{s_par * 100:.4f}%")
+
+        # User fixed rate input
         fixed_rate_user = (
             st.number_input(
                 "Fixed rate to value (% p.a.)",
                 value=round(s_par * 100, 4),
                 step=0.01,
-                format="%.4f",
-            )
-            / 100.0
+                format="%.4f"
+            ) / 100.0
         )
-        st.metric(
-            "Swap PV (Fixed - Float)",
-            f"{swap_pv(curve, T_swap, fixed_rate_user, notional, freq):,.2f}",
+
+        # PV + DV01
+        pv_swap = swap_pv(curve, T_swap, fixed_rate_user, notional, freq)
+        dv01_val = dv01(curve, T_swap, fixed_rate_user, notional, freq, bp=1.0)
+
+        c1, c2 = st.columns(2)
+        c1.metric("Swap PV (Fixed - Float)", f"{pv_swap:,.2f}")
+        c2.metric("DV01 (per +1bp parallel shift)", f"{dv01_val:,.2f}")
+
+        # 🔰 Beginner-friendly interpretation
+        summary_lines_swap = summarize_swap_output(
+            par_rate=s_par,
+            fixed_rate=fixed_rate_user,
+            pv=pv_swap,
+            dv01_val=dv01_val,
+            notional=notional,
+            T=T_swap,
+            freq=freq
         )
-        st.metric(
-            "DV01 (per +1bp parallel shift)",
-            f"{dv01(curve, T_swap, fixed_rate_user, notional, freq, bp=1.0):,.2f}",
-        )
+        with st.expander("Beginner notes & interpretation (Swap)", expanded=True):
+            for ln in summary_lines_swap:
+                st.markdown(f"- {ln}")
 
 
 # ===== TAB 7: Futures & Black-76 (curve-aware) =====
@@ -1455,6 +1629,7 @@ with tab7:
         key="b76_T",
     )
 
+    # Forward price logic
     if mode_fut.startswith("Compute"):
         if disc_src == "From curve (DF(T))" and curve is not None:
             q_flat = (
@@ -1465,8 +1640,7 @@ with tab7:
                     step=0.25,
                     format="%.2f",
                     key="q_curve",
-                )
-                / 100.0
+                ) / 100.0
             )
             F0 = forward_price_from_curve(opts["S0"], curve, T_fut, q_cont=q_flat)
         else:
@@ -1482,6 +1656,7 @@ with tab7:
 
     st.metric("F₀ (futures/forward)", f"{F0:,.4f}")
 
+    # Vol & option type
     sigma_b76 = (
         st.number_input(
             "Volatility σ (% per year)",
@@ -1490,8 +1665,7 @@ with tab7:
             step=0.5,
             format="%.2f",
             key="b76_sigma",
-        )
-        / 100.0
+        ) / 100.0
     )
     otype_b76 = st.radio(
         "Option type (on futures)",
@@ -1500,6 +1674,7 @@ with tab7:
         key="b76_otype",
     ).lower()
 
+    # DF(T) if curve is used
     DF_T = None
     if disc_src == "From curve (DF(T))":
         if curve is None:
@@ -1508,7 +1683,9 @@ with tab7:
             DF_T = curve.get_df(T_fut)
             st.metric("DF(T) from curve", f"{DF_T:.6f}")
 
+    # --- Implied volatility ---
     st.markdown("**Implied Volatility (from market price)**")
+    iv76 = None
     mkt_b76 = st.number_input(
         "Market option price (any currency)",
         min_value=0.0,
@@ -1516,6 +1693,7 @@ with tab7:
         step=0.1,
         key="b76_mkt",
     )
+
     if mkt_b76 > 0:
         iv76 = implied_vol_b76(
             mkt_b76,
@@ -1531,6 +1709,7 @@ with tab7:
         else:
             st.metric("Black-76 IV", f"{iv76 * 100:.3f}%")
 
+    # --- Pricing & Greeks ---
     if DF_T is None:
         price_b76 = black76_price(F0, K_fut, opts["r"], T_fut, sigma_b76, otype_b76)
         G76 = black76_greeks(F0, K_fut, opts["r"], T_fut, sigma_b76)
@@ -1548,6 +1727,7 @@ with tab7:
         theta_day = G76["theta_per_day"]
         rho_disp = G76["rho_df"]
 
+    # Metrics
     c1, c2, c3 = st.columns(3)
     c1.metric("Option price", f"{price_b76:,.4f}")
     c2.metric("Δ (futures)", f"{delta_disp:.6f}")
@@ -1561,13 +1741,37 @@ with tab7:
         f"{rho_disp:.6f}",
     )
 
+    # 🔰 Beginner-friendly interpretation
+    summary_lines_b76 = summarize_b76_output(
+        F0=F0,
+        K=K_fut,
+        otype=otype_b76,
+        price=price_b76,
+        delta=delta_disp,
+        gamma=gamma_disp,
+        vega=vega_disp,
+        theta_day=theta_day,
+        rho=rho_disp,
+        iv=iv76,
+        DF_T=DF_T,
+        T=T_fut,
+    )
+    with st.expander("Beginner notes & interpretation (Futures option)", expanded=True):
+        for ln in summary_lines_b76:
+            st.markdown(f"- {ln}")
+
+    # --- Charts ---
     st.subheader("Charts")
     F_grid = np.linspace(max(0.01, F0 * 0.4), F0 * 1.6, 200)
     payoff_call = np.maximum(F_grid - K_fut, 0.0)
     payoff_put = np.maximum(K_fut - F_grid, 0.0)
+
     figp, axp = plt.subplots()
-    axp.plot(F_grid, payoff_call if otype_b76 == "call" else payoff_put,
-             label=f"{otype_b76.capitalize()} payoff at expiry")
+    axp.plot(
+        F_grid,
+        payoff_call if otype_b76 == "call" else payoff_put,
+        label=f"{otype_b76.capitalize()} payoff at expiry",
+    )
     axp.axhline(0, linewidth=1)
     axp.set_xlabel("F_T")
     axp.set_ylabel("Payoff")
@@ -1579,6 +1783,7 @@ with tab7:
         values = [black76_price(fv, K_fut, opts["r"], T_fut, sigma_b76, otype_b76) for fv in F0_grid]
     else:
         values = [black76_price_df(fv, K_fut, DF_T, T_fut, sigma_b76, otype_b76) for fv in F0_grid]
+
     figv, axv = plt.subplots()
     axv.plot(F0_grid, values, label="Option value today")
     axv.scatter([F0], [price_b76], marker="o")
@@ -1587,6 +1792,7 @@ with tab7:
     axv.set_title("Option value vs F₀")
     axv.legend()
     st.pyplot(figv, use_container_width=True)
+
 
 
 # ===== TAB 8: Reports & Export =====
