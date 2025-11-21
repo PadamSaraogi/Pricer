@@ -563,8 +563,6 @@ def summarize_crr_output(opt_type: str, euro_tree: float, amer_tree: float, bs_e
 
     return lines[:4]
 
-
-# ===== TAB 2: American (CRR) =====
 # ===== TAB 2: American (CRR) =====
 with tab2:
     opts = render_options_inputs("opt_inputs_tab2")
@@ -623,22 +621,20 @@ with tab3:
     import math
     from datetime import datetime
     from typing import Optional
-    
+
     import numpy as np
     import pandas as pd
     import streamlit as st
     import altair as alt
-    
-    
+
     # ==============================
     # Black–Scholes + IV utilities
     # ==============================
-    
+
     def _norm_cdf(x: float) -> float:
         """Standard normal CDF using math.erf (no SciPy)."""
         return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-    
-    
+
     def bs_price(
         S: float,
         K: float,
@@ -659,7 +655,7 @@ with tab3:
                 return max(S - K, 0.0)
             else:
                 return max(K - S, 0.0)
-    
+
         # forward
         fwd = S * math.exp((r - q) * T)
         vol_sqrtT = sigma * math.sqrt(T)
@@ -669,7 +665,7 @@ with tab3:
             # log domain errors, etc.
             return float("nan")
         d2 = d1 - vol_sqrtT
-    
+
         if option_type == "C":
             # discounted forward call
             return math.exp(-r * T) * (fwd * _norm_cdf(d1) - K * _norm_cdf(d2))
@@ -677,8 +673,7 @@ with tab3:
             # put via call–put parity
             call = math.exp(-r * T) * (fwd * _norm_cdf(d1) - K * _norm_cdf(d2))
             return call - math.exp(-r * T) * (fwd - K)
-    
-    
+
     def implied_vol_bs(
         market_price: float,
         S: float,
@@ -694,45 +689,97 @@ with tab3:
     ) -> float:
         """
         Robust bisection IV solver.
-    
+
         - Rejects rows where price < intrinsic or <= 0.
         - Uses wide sigma bounds to allow very high IVs (~1000%+).
         - Returns np.nan if cannot find a solution.
         """
         option_type = option_type.upper()
         intrinsic = max(S - K, 0.0) if option_type == "C" else max(K - S, 0.0)
-    
+
         # Basic sanity checks
         if market_price <= 0 or market_price < intrinsic:
             return np.nan
-    
+
         # Price at low/high
         p_low = bs_price(S, K, r, q, T, sigma_low, option_type)
         p_high = bs_price(S, K, r, q, T, sigma_high, option_type)
-    
+
         # If even huge sigma can't reach market_price -> unrealistic
         if np.isnan(p_low) or np.isnan(p_high) or p_high < market_price:
             return np.nan
-    
+
         low, high = sigma_low, sigma_high
         for _ in range(max_iter):
             mid = 0.5 * (low + high)
             p_mid = bs_price(S, K, r, q, T, mid, option_type)
-    
+
             if np.isnan(p_mid):
                 return np.nan
-    
+
             diff = p_mid - market_price
             if abs(diff) < tol:
                 return mid
-    
+
             if diff > 0:
                 high = mid
             else:
                 low = mid
-    
+
         return mid  # best effort
-        
+
+    # ==============================
+    # Beginner summary helper
+    # ==============================
+
+    def summarize_chain_iv_basic(df_valid: pd.DataFrame) -> list[str]:
+        """
+        Returns 3–4 short bullets explaining IV behaviour for the selected expiry.
+        df_valid = rows with a valid IV column ('iv') for that expiry.
+        """
+        lines: list[str] = []
+        if df_valid is None or df_valid.empty:
+            return lines
+
+        # Range of strikes
+        k_min = df_valid["strike"].min()
+        k_max = df_valid["strike"].max()
+        lines.append(
+            f"Strikes range from **{k_min:.2f} to {k_max:.2f}** for this expiry."
+        )
+
+        # IV levels (convert to %)
+        iv_vals = df_valid["iv"] * 100.0
+        iv_min, iv_max, iv_med = iv_vals.min(), iv_vals.max(), iv_vals.median()
+        lines.append(
+            f"Implied volatilities span **{iv_min:.1f}% to {iv_max:.1f}%**, with a median around {iv_med:.1f}%."
+        )
+
+        # Skew (low-strike vs high-strike IV)
+        df_sorted = df_valid.sort_values("strike")
+        q = max(1, len(df_sorted) // 4)
+        low_iv = (df_sorted.head(q)["iv"] * 100.0).mean()
+        high_iv = (df_sorted.tail(q)["iv"] * 100.0).mean()
+
+        if low_iv > high_iv + 1.0:
+            lines.append(
+                f"Lower strikes have **higher IV** ({low_iv:.1f}% vs {high_iv:.1f}%) → downside is priced richer (put skew)."
+            )
+        elif high_iv > low_iv + 1.0:
+            lines.append(
+                f"Higher strikes have **higher IV** ({high_iv:.1f}% vs {low_iv:.1f}%) → upside calls trade richer."
+            )
+        else:
+            lines.append(
+                "IV curve is **fairly flat across strikes** → little skew for this expiry."
+            )
+
+        return lines[:4]
+
+    # ==============================
+    # UI + logic
+    # ==============================
+
     st.subheader("Upload Option Chain CSV")
 
     st.markdown(
@@ -844,6 +891,12 @@ with tab3:
             )
             st.altair_chart(smile_chart, use_container_width=True)
 
+            # 🔰 Beginner-friendly IV smile interpretation
+            summary_lines = summarize_chain_iv_basic(df_valid)
+            with st.expander("Beginner notes & interpretation (IV Smile)", expanded=True):
+                for ln in summary_lines:
+                    st.markdown(f"- {ln}")
+
         # ---- IV surface across ALL expiries ----
         st.write("### IV Surface Data (all expiries)")
 
@@ -887,6 +940,7 @@ with tab3:
             st.altair_chart(atm_chart, use_container_width=True)
         else:
             st.info("No near-ATM points found for the surface preview.")
+
             
 # ===== TAB 4: Bonds (numeric & dates) =====
 with tab4:
