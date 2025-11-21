@@ -893,7 +893,7 @@ with tab3:
 
             # 🔰 Beginner-friendly IV smile interpretation
             summary_lines = summarize_chain_iv_basic(df_valid)
-            with st.expander("Beginner notes & interpretation (IV Smile)", expanded=True):
+            with st.expander("notes & interpretation (IV Smile)", expanded=True):
                 for ln in summary_lines:
                     st.markdown(f"- {ln}")
 
