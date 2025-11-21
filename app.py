@@ -137,6 +137,7 @@ def render_options_inputs(defaults_key: str = "opt_defaults"):
     from date_utils import parse_date as _pdate
     from dividends import CashDividend as _CashDiv, spot_adjusted_for_dividends as _spot_adj
 
+    # Initialise defaults in session_state
     if defaults_key not in st.session_state:
         st.session_state[defaults_key] = {
             "use_dates": False,
@@ -163,10 +164,11 @@ def render_options_inputs(defaults_key: str = "opt_defaults"):
     s = st.session_state[defaults_key]
     key = lambda name: f"{defaults_key}__{name}"
 
+    # ---- BASIC INPUTS (expander 1) ----
     with st.expander("⚙️ Options Inputs", expanded=True):
         st.markdown("**Basic inputs** – start by changing only these.")
 
-        # --- Basic: spot & strike ---
+        # Spot & strike
         colA, colB = st.columns(2)
         S0 = colA.number_input(
             "Spot price (S₀)",
@@ -186,7 +188,7 @@ def render_options_inputs(defaults_key: str = "opt_defaults"):
         )
         s["S0"], s["K"] = S0, K
 
-        # --- Basic: rate & volatility ---
+        # Rate & volatility
         col1, col2 = st.columns(2)
         r = (
             col1.number_input(
@@ -213,7 +215,7 @@ def render_options_inputs(defaults_key: str = "opt_defaults"):
         )
         s["r"], s["sigma"] = r, sigma
 
-        # --- Basic: time & dividend yield ---
+        # Time & dividend yield
         col3, col4 = st.columns(2)
         T_basic = col3.number_input(
             "Time to expiry (years)",
@@ -246,103 +248,106 @@ def render_options_inputs(defaults_key: str = "opt_defaults"):
         )
         s["opt_type"] = opt_type
 
-        # Defaults for advanced
-        dc: _DC = "ACT/365F"
-        val_date = _date.today()
-        T_eff = T_basic
+    # Defaults for advanced if user doesn't touch it
+    dc: _DC = "ACT/365F"
+    val_date = _date.today()
+    T_eff = T_basic
+    S_eff = S0
 
-        # --- Advanced: dates + dividends ---
-        with st.expander("Advanced settings (dates, day-counts, dividends)", expanded=False):
-            use_dates = st.checkbox(
-                "Use dates instead of 'Time to expiry (years)'",
-                value=s["use_dates"],
-                key=key("use_dates_checkbox"),
-            )
-            s["use_dates"] = use_dates
+    # ---- ADVANCED INPUTS (expander 2, not nested) ----
+    with st.expander("Advanced settings (dates, day-counts, dividends)", expanded=False):
+        # Use dates vs T
+        use_dates = st.checkbox(
+            "Use dates instead of 'Time to expiry (years)'",
+            value=s["use_dates"],
+            key=key("use_dates_checkbox"),
+        )
+        s["use_dates"] = use_dates
 
-            if use_dates:
-                dc = st.selectbox(
-                    "Day-count convention (for T)",
-                    ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"],
-                    index=["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"].index(
-                        s["dc"]
-                    ),
-                    key=key("dc_select"),
-                )
-
-                val_date_str = st.text_input(
-                    "Valuation date (YYYY-MM-DD)",
-                    value=s["val_date"],
-                    key=key("val_date"),
-                )
-                expiry_str = st.text_input(
-                    "Option expiry date (YYYY-MM-DD)",
-                    value=s["expiry"],
-                    key=key("expiry"),
-                )
-
-                try:
-                    val_date = _pdate(val_date_str)
-                    exp_date = _pdate(expiry_str)
-                    T_eff = _yf(val_date, exp_date, dc)
-                except Exception:
-                    val_date = _date.today()
-                    T_eff = 0.0
-
-                s["dc"], s["val_date"], s["expiry"] = dc, val_date_str, expiry_str
-
-            # --- Discrete cash dividends ---
-            st.markdown("---")
-            use_disc_div = st.checkbox(
-                "Enable discrete **cash** dividends",
-                value=s["use_disc_div"],
-                key=key("use_disc_div"),
-            )
-            s["use_disc_div"] = use_disc_div
-
-            div_dc: _DC = st.selectbox(
-                "Day-count for dividends",
+        if use_dates:
+            dc = st.selectbox(
+                "Day-count convention (for T)",
                 ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"],
                 index=["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"].index(
-                    s["div_dc"]
+                    s["dc"]
                 ),
-                disabled=not use_disc_div,
-                key=key("div_dc"),
+                key=key("dc_select"),
             )
-            s["div_dc"] = div_dc
+
+            val_date_str = st.text_input(
+                "Valuation date (YYYY-MM-DD)",
+                value=s["val_date"],
+                key=key("val_date"),
+            )
+            expiry_str = st.text_input(
+                "Option expiry date (YYYY-MM-DD)",
+                value=s["expiry"],
+                key=key("expiry"),
+            )
+
+            try:
+                val_date = _pdate(val_date_str)
+                exp_date = _pdate(expiry_str)
+                T_eff = _yf(val_date, exp_date, dc)
+            except Exception:
+                val_date = _date.today()
+                T_eff = 0.0
+
+            s["dc"], s["val_date"], s["expiry"] = dc, val_date_str, expiry_str
+
+        # Discrete cash dividends
+        st.markdown("---")
+        use_disc_div = st.checkbox(
+            "Enable discrete **cash** dividends",
+            value=s["use_disc_div"],
+            key=key("use_disc_div"),
+        )
+        s["use_disc_div"] = use_disc_div
+
+        div_dc: _DC = st.selectbox(
+            "Day-count for dividends",
+            ["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"],
+            index=["ACT/365F", "ACT/360", "30/360US", "30/360EU", "ACT/ACT"].index(
+                s["div_dc"]
+            ),
+            disabled=not use_disc_div,
+            key=key("div_dc"),
+        )
+        s["div_dc"] = div_dc
+
+        if use_disc_div:
+            st.caption(
+                "Add future cash dividends (per share) that occur **after valuation date and before expiry**."
+            )
+            div_df = st.data_editor(
+                s["div_rows"],
+                num_rows="dynamic",
+                use_container_width=True,
+                key=key("disc_div_tbl"),
+            )
+            s["div_rows"] = div_df
 
             dividends_list = []
-            if use_disc_div:
-                st.caption(
-                    "Add future cash dividends (per share) that occur **after valuation date and before expiry**."
-                )
-                div_df = st.data_editor(
-                    s["div_rows"],
-                    num_rows="dynamic",
-                    use_container_width=True,
-                    key=key("disc_div_tbl"),
-                )
-                s["div_rows"] = div_df
-                for _, row in div_df.iterrows():
-                    try:
-                        dpay = _pdate(str(row["Pay Date (YYYY-MM-DD)"]))
-                        amt = float(row["Amount"])
-                        if amt > 0 and dpay > val_date:
-                            dividends_list.append(
-                                _CashDiv(pay_date=dpay, amount=amt)
-                            )
-                    except Exception:
-                        pass
+            for _, row in div_df.iterrows():
+                try:
+                    dpay = _pdate(str(row["Pay Date (YYYY-MM-DD)"]))
+                    amt = float(row["Amount"])
+                    if amt > 0 and dpay > val_date:
+                        dividends_list.append(
+                            _CashDiv(pay_date=dpay, amount=amt)
+                        )
+                except Exception:
+                    pass
 
-            # Effective spot with discrete dividends
-            if use_disc_div and len(dividends_list) > 0:
-                S_eff = _spot_adj(S0, dividends_list, r_cont=r, valuation_date=val_date, dc=div_dc)
-                pv_div = S0 - S_eff
+            if len(dividends_list) > 0:
+                S_eff_calc = _spot_adj(
+                    S0, dividends_list, r_cont=r, valuation_date=val_date, dc=div_dc
+                )
+                pv_div = S0 - S_eff_calc
+                S_eff = S_eff_calc
                 st.info(
                     f"S₀,eff = S₀ − PV(dividends) = {S0:.4f} − {pv_div:.4f} = **{S_eff:.4f}**"
                 )
-            else:
-                S_eff = S0
 
     return {
         "S0": S0,
@@ -559,18 +564,18 @@ with tab1:
 
     # Value today vs spot
     call_vals, put_vals = [], []
-    for s in S_grid:
+    for s_ in S_grid:
         _in = OptionInput(
-            S0=float(s),
+            S0=float(s_),
             K=opts["K"],
             r=opts["r"],
             sigma=opts["sigma"],
             T=opts["T"],
             q=opts["q"],
         )
-        c, p, *_ = bs_prices(_in)
-        call_vals.append(c)
-        put_vals.append(p)
+        c_, p_, *_ = bs_prices(_in)
+        call_vals.append(c_)
+        put_vals.append(p_)
 
     fig2, ax2 = plt.subplots()
     if opts["opt_type"] == "Call":
@@ -614,11 +619,11 @@ We use a Cox–Ross–Rubinstein tree and compare it to Black–Scholes.
 
     steps = st.slider(
         "CRR steps (accuracy vs speed)",
-        min_value=25,
-        max_value=1000,
-        value=200,
-        step=25,
-        key="crr_steps",
+            min_value=25,
+            max_value=1000,
+            value=200,
+            step=25,
+            key="crr_steps",
     )
     inp = OptionInput(
         S0=opts["S_for_options"],
