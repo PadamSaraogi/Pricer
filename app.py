@@ -614,7 +614,7 @@ with tab2:
         bs_euro=bs_euro,
         steps=steps,
     )
-    with st.expander("Beginner notes & interpretation (CRR vs BS)", expanded=True):
+    with st.expander("notes & interpretation (CRR vs BS)", expanded=True):
         for ln in analysis_lines_crr:
             st.markdown(f"- {ln}")
 
