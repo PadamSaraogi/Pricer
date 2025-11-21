@@ -990,7 +990,6 @@ def summarize_bond_output(face, coupon_pct, ytm, price, mac, mod, conv, mode_lab
 
     return lines[:4]
 
-
 # ===== TAB 4: Bonds (numeric & dates) =====
 with tab4:
     st.subheader("Bond Pricer — Price, YTM, Duration & Convexity")
@@ -1163,7 +1162,6 @@ with tab4:
                 with st.expander("Beginner notes & interpretation", expanded=True):
                     for ln in summary_lines:
                         st.markdown(f"- {ln}")
-
 
 
 # ===== TAB 5: Yield Curve =====
