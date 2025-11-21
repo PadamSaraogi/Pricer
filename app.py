@@ -251,6 +251,84 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
     ]
 )
 
+# -------- Helper: compact beginner-friendly summary for Tab 1 --------
+def summarize_option_output(opts, call, put, d1, d2, G, tag_info, mkt_price, iv_single=None, iv_mid=None):
+    S = opts["S_for_options"]
+    K = opts["K"]
+    opt = opts["opt_type"]
+    lines = []
+
+    # 1) Moneyness
+    tag = tag_info.get("tag", "")
+    if "ATM" in tag:
+        lines.append(f"{opt} is **ATM** — most of the value is time value.")
+    elif "ITM" in tag:
+        lines.append(f"{opt} is **ITM** — it already has intrinsic value.")
+    elif "OTM" in tag:
+        lines.append(f"{opt} is **OTM** — payoff only if price crosses the strike.")
+    else:
+        lines.append(f"Moneyness tag: {tag} — double-check S₀ and K if this looks odd.")
+
+    # 2) Price context
+    lines.append(f"Model prices: Call ≈ {call:.2f}, Put ≈ {put:.2f} using your inputs.")
+
+    # 3) Sensitivity: Delta + Gamma
+    delta = G["delta"]["call"] if opt.lower() == "call" else G["delta"]["put"]
+    gamma = G["gamma"]
+
+    if abs(delta) < 0.3:
+        sens = "low"
+    elif abs(delta) < 0.7:
+        sens = "moderate"
+    else:
+        sens = "high"
+
+    speed = "fast" if gamma > 0.05 else "stable"
+    lines.append(
+        f"Delta ≈ {delta:.2f}, Gamma ≈ {gamma:.3f} → {sens} sensitivity; delta changes {speed} if the price moves."
+    )
+
+    # 4) Time decay + vol risk: Theta + Vega
+    theta = G["theta_per_day"]["call"] if opt.lower() == "call" else G["theta_per_day"]["put"]
+    vega = G["vega_per_1pct"]
+
+    decay = f"loses about {abs(theta):.4f} per day" if theta < 0 else "has minimal daily time decay"
+    if vega > 0.5:
+        vol = "very sensitive to volatility"
+    elif vega > 0.1:
+        vol = "moderately sensitive to volatility"
+    else:
+        vol = "not very sensitive to volatility"
+
+    lines.append(
+        f"Theta ≈ {theta:.4f}/day → it {decay}. Vega ≈ {vega:.3f} → it is {vol}."
+    )
+
+    # 5) Market vs model (only if user gives a price)
+    model_px = call if opt.lower() == "call" else put
+    if mkt_price and mkt_price > 0 and model_px > 0:
+        diff = (mkt_price - model_px) / model_px
+        if abs(diff) < 0.05:
+            lines.append("Market price is **close** to the model price.")
+        elif diff > 0:
+            lines.append("Market price is **above** model → market is pricing in more volatility/risk.")
+        else:
+            lines.append("Market price is **below** model → model suggests it may be cheap vs these inputs.")
+
+    # 6) Implied volatility level
+    iv = iv_single or iv_mid
+    if iv is not None:
+        if iv < 0.15:
+            lvl = "low"
+        elif iv < 0.40:
+            lvl = "normal"
+        else:
+            lvl = "high"
+        lines.append(f"Implied volatility ≈ {iv * 100:.1f}% → a **{lvl}** volatility regime.")
+
+    return lines[:5]
+
+
 # ===== TAB 1: Option Pricer (BSM) =====
 with tab1:
     opts = render_options_inputs("opt_inputs_tab1")
