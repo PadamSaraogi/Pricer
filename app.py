@@ -1034,7 +1034,7 @@ with tab4:
                 conv=conv,
                 mode_label="Inputs → Price (Numeric T)",
             )
-            with st.expander("Beginner notes & interpretation", expanded=True):
+            with st.expander("notes & interpretation", expanded=True):
                 for ln in summary_lines:
                     st.markdown(f"- {ln}")
 
@@ -1067,7 +1067,7 @@ with tab4:
                     conv=conv,
                     mode_label="Price → YTM (Numeric T)",
                 )
-                with st.expander("Beginner notes & interpretation", expanded=True):
+                with st.expander("notes & interpretation", expanded=True):
                     for ln in summary_lines:
                         st.markdown(f"- {ln}")
 
@@ -1126,7 +1126,7 @@ with tab4:
                 conv=None,
                 mode_label="Inputs → Price (Dates)",
             )
-            with st.expander("Beginner notes & interpretation", expanded=True):
+            with st.expander("notes & interpretation", expanded=True):
                 for ln in summary_lines:
                     st.markdown(f"- {ln}")
 
@@ -1159,7 +1159,7 @@ with tab4:
                     conv=None,
                     mode_label="Price → YTM (Dates)",
                 )
-                with st.expander("Beginner notes & interpretation", expanded=True):
+                with st.expander("notes & interpretation", expanded=True):
                     for ln in summary_lines:
                         st.markdown(f"- {ln}")
 
@@ -1589,7 +1589,7 @@ with tab6:
             T=T_swap,
             freq=freq
         )
-        with st.expander("Beginner notes & interpretation (Swap)", expanded=True):
+        with st.expander("notes & interpretation (Swap)", expanded=True):
             for ln in summary_lines_swap:
                 st.markdown(f"- {ln}")
 
@@ -1756,7 +1756,7 @@ with tab7:
         DF_T=DF_T,
         T=T_fut,
     )
-    with st.expander("Beginner notes & interpretation (Futures option)", expanded=True):
+    with st.expander("notes & interpretation (Futures option)", expanded=True):
         for ln in summary_lines_b76:
             st.markdown(f"- {ln}")
 
