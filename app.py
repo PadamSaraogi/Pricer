@@ -86,7 +86,7 @@ def cached_compute_chain_iv(
 
 
 # ---------------------------
-# Page config + global mode
+# Page config
 # ---------------------------
 st.set_page_config(
     page_title="Options & Bonds Pricer (Beginner + Pro)", page_icon="📊", layout="wide"
@@ -94,32 +94,7 @@ st.set_page_config(
 
 st.title("📊 Options & Bonds Pricer (Beginner + Pro)")
 st.caption(
-    "Start with simple pricing for options and bonds, then explore advanced tools like IV surfaces, yield curves, swaps and futures."
-)
-
-quick_task = st.radio(
-    "Quick start:",
-    ["Price a simple option", "Price a simple bond", "Explore advanced tools"],
-    horizontal=True,
-)
-
-if quick_task == "Price a simple option":
-    st.info(
-        "Go to the **Option Pricer** tab below and use only the **Basic inputs** at first. "
-        "Ignore advanced tabs until you're comfortable."
-    )
-elif quick_task == "Price a simple bond":
-    st.info(
-        "Go to the **Bonds** tab below. Start with **Numeric T** and 'Inputs → Price' mode."
-    )
-else:
-    st.info(
-        "Use the **advanced tools** (American options, IV surfaces, yield curve, swaps, futures) "
-        "once you’re comfortable with the basics."
-    )
-
-show_advanced = st.toggle(
-    "Show advanced tools (American, IV surfaces, curve, swaps, futures)", value=False
+    "Price options and bonds with plain-English summaries, plus advanced tools for IV surfaces, yield curves, swaps, and futures."
 )
 
 
@@ -598,32 +573,20 @@ with tab1:
 
 # ===== TAB 2: American (CRR) =====
 with tab2:
-    if not show_advanced:
-        st.info(
-            "This is an **advanced** tool for American options via binomial trees. "
-            "Turn on **Show advanced tools** at the top to use it."
-        )
-        st.stop()
+    st.subheader("American vs European (CRR Binomial)")
+    st.caption(
+        "Advanced: compares CRR tree pricing for American options with European (tree + Black–Scholes)."
+    )
 
     opts = render_options_inputs("opt_inputs_tab2")
-    st.subheader("American vs European (CRR Binomial)")
-    st.markdown(
-        """
-- **European**: exercise only at expiry (Black–Scholes).
-- **American**: can exercise any time → usually more valuable.
-
-We use a Cox–Ross–Rubinstein tree and compare it to Black–Scholes.
-"""
-    )
-    st.caption("Discrete dividends are baked in via the effective S₀,eff at the start node.")
 
     steps = st.slider(
         "CRR steps (accuracy vs speed)",
-            min_value=25,
-            max_value=1000,
-            value=200,
-            step=25,
-            key="crr_steps",
+        min_value=25,
+        max_value=1000,
+        value=200,
+        step=25,
+        key="crr_steps",
     )
     inp = OptionInput(
         S0=opts["S_for_options"],
@@ -651,15 +614,10 @@ We use a Cox–Ross–Rubinstein tree and compare it to Black–Scholes.
 
 # ===== TAB 3: Chain & Smiles =====
 with tab3:
-    if not show_advanced:
-        st.info(
-            "This tab computes IV from an options chain and plots IV smiles. "
-            "Turn on **Show advanced tools** at the top to use it."
-        )
-        st.stop()
+    st.subheader("Options Chain (CSV) → Bulk IV & Smiles")
+    st.caption("Advanced: upload an options chain, compute IV row-wise, see smiles.")
 
     opts = render_options_inputs("opt_inputs_tab3")
-    st.subheader("Options Chain (CSV) → Bulk IV & Smiles")
 
     st.markdown(
         """
@@ -805,16 +763,10 @@ If you don't have real data, download the sample and play with it.
 
 # ===== TAB 4: Vol Surface =====
 with tab4:
-    if not show_advanced:
-        st.info(
-            "This tab builds a **multi-expiry IV surface** from an options chain. "
-            "Turn on **Show advanced tools** at the top to use it."
-        )
-        st.stop()
+    st.subheader("Volatility Surface (Strike × Expiry)")
+    st.caption("Advanced: multi-expiry IV surface from an options chain.")
 
     opts = render_options_inputs("opt_inputs_tab4")
-    st.subheader("Volatility Surface (Strike × Expiry)")
-    st.caption("Advanced: requires multi-expiry option chain data.")
 
     st.markdown(
         """
@@ -1140,16 +1092,9 @@ with tab5:
 
 # ===== TAB 6: Yield Curve =====
 with tab6:
-    if not show_advanced:
-        st.info(
-            "Yield curve bootstrapping is an **advanced** topic. "
-            "Turn on **Show advanced tools** at the top to use it."
-        )
-        st.stop()
-
     st.subheader("Yield Curve — Bootstrapping")
     st.caption(
-        "We build a zero curve from deposits and coupon bonds, then derive discount factors and forward rates."
+        "Advanced: build a zero curve from deposits and coupon bonds, then derive discount factors and forward rates."
     )
 
     curve_mode = st.radio(
@@ -1346,16 +1291,9 @@ with tab6:
 
 # ===== TAB 7: Swaps =====
 with tab7:
-    if not show_advanced:
-        st.info(
-            "Interest rate swaps are an **advanced** fixed-income instrument. "
-            "Turn on **Show advanced tools** at the top to use this tab."
-        )
-        st.stop()
-
     st.subheader("Plain-Vanilla Interest Rate Swap")
     st.caption(
-        "We use the bootstrapped curve to compute the par fixed rate, PV, and DV01 of a fixed-for-floating swap."
+        "Advanced: uses the bootstrapped curve to compute par fixed rate, PV, and DV01 of a fixed-for-floating swap."
     )
 
     curve: YieldCurve | None = st.session_state.get(
@@ -1407,18 +1345,12 @@ with tab7:
 
 # ===== TAB 8: Futures & Black-76 (curve-aware) =====
 with tab8:
-    if not show_advanced:
-        st.info(
-            "This tab prices options on futures/forwards using Black–76. "
-            "Turn on **Show advanced tools** at the top to use it."
-        )
-        st.stop()
-
-    opts = render_options_inputs("opt_inputs_tab8")
     st.subheader("Futures/Forwards & Black-76 Options")
     st.caption(
-        "Step 1: get/enter the forward price. Step 2: choose discounting. Step 3: price the option and see Greeks."
+        "Advanced: price options on futures/forwards using Black–76, with optional curve-based discounting."
     )
+
+    opts = render_options_inputs("opt_inputs_tab8")
 
     curve: YieldCurve | None = st.session_state.get(
         "bootstrapped_curve"
@@ -1632,7 +1564,7 @@ with tab8:
 with tab9:
     st.subheader("Reports & Export")
     st.caption(
-        "Use this after you’ve set up your option in the Option Pricer tab."
+        "Use this after you’ve set up your option in the Option Pricer tab to export reports."
     )
 
     base_opts = render_options_inputs("opt_inputs_reports")
@@ -1708,5 +1640,5 @@ with tab9:
         )
 
 st.caption(
-    "Beginner mode shows core pricers; enable **Show advanced tools** for IV surfaces, curve bootstrap, swaps, and futures."
+    "All tabs are available: use Option Pricer & Bonds to start, then experiment with the advanced tabs as you learn."
 )
